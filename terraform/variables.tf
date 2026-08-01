@@ -34,6 +34,12 @@ variable "admin_subdomain" {
   default     = "authpole-admin.swii.sh"
 }
 
+variable "manage_dns" {
+  description = "Set to true if using AWS Route53 for automated DNS validation record creation"
+  type        = bool
+  default     = false
+}
+
 variable "s3_bucket_name" {
   description = "AWS S3 Bucket name for Authpole CAS object storage"
   type        = string
