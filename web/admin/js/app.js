@@ -388,25 +388,48 @@ document.addEventListener('DOMContentLoaded', () => {
           <td>${(u.role_ids || []).map(r => `<span class="card-badge badge-cyan">${r}</span>`).join(' ')}</td>
           <td>${(u.team_ids || []).map(t => `<span class="card-badge badge-emerald">${t}</span>`).join(' ')}</td>
           <td><span class="card-badge ${u.active ? 'badge-emerald' : 'badge-amber'}">${u.active ? 'Active' : 'Disabled'}</span></td>
+          <td>
+            <button class="btn btn-secondary edit-user-btn" data-user='${JSON.stringify(u)}'>Edit User</button>
+          </td>
         </tr>
       `).join('');
+
+      document.querySelectorAll('.edit-user-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          openEditModal('user', JSON.parse(btn.dataset.user));
+        });
+      });
 
       const { data: teams } = await api.getTeams();
       document.getElementById('teamsGrid').innerHTML = (teams || []).map(t => `
         <div class="card">
           <h3>${t.name}</h3>
           <p class="subtitle">${t.description}</p>
+          <button class="btn btn-secondary btn-block edit-team-btn" style="margin-top: 1rem;" data-team='${JSON.stringify(t)}'>Edit Team</button>
         </div>
       `).join('');
+
+      document.querySelectorAll('.edit-team-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          openEditModal('team', JSON.parse(btn.dataset.team));
+        });
+      });
 
       const { data: roles } = await api.getRoles();
       document.getElementById('rolesGrid').innerHTML = (roles || []).map(r => `
         <div class="card">
           <h3>${r.name}</h3>
           <p class="subtitle">${r.description}</p>
-          <div>Permissions: ${(r.permissions || []).map(p => `<span class="code-inline">${p}</span> `).join('')}</div>
+          <div style="margin-bottom: 1rem;">Permissions: ${(r.permissions || []).map(p => `<span class="code-inline">${p}</span> `).join('')}</div>
+          <button class="btn btn-secondary btn-block edit-role-btn" data-role='${JSON.stringify(r)}'>Edit Role</button>
         </div>
       `).join('');
+
+      document.querySelectorAll('.edit-role-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          openEditModal('role', JSON.parse(btn.dataset.role));
+        });
+      });
     } catch (err) {
       console.error('Failed to load RBAC:', err);
     }
@@ -528,6 +551,63 @@ document.addEventListener('DOMContentLoaded', () => {
           <input type="text" id="mFingerprint" value="${record?.cert_fingerprint || ''}" />
         </div>
       `;
+    } else if (type === 'user') {
+      modalBody.innerHTML = `
+        <div class="form-group">
+          <label>User ID</label>
+          <input type="text" id="mID" value="${record?.id || ''}" ${record ? 'readonly' : ''} placeholder="usr_12345" />
+        </div>
+        <div class="form-group">
+          <label>Full Name</label>
+          <input type="text" id="mName" value="${record?.name || ''}" placeholder="Alex Developer" />
+        </div>
+        <div class="form-group">
+          <label>Email Address</label>
+          <input type="email" id="mEmail" value="${record?.email || ''}" placeholder="alex@example.com" />
+        </div>
+        <div class="form-group">
+          <label>Assigned Role IDs (comma separated)</label>
+          <input type="text" id="mRoles" value="${(record?.role_ids || []).join(', ')}" placeholder="admin, developer" />
+        </div>
+        <div class="form-group">
+          <label>Assigned Team IDs (comma separated)</label>
+          <input type="text" id="mTeams" value="${(record?.team_ids || []).join(', ')}" placeholder="engineering, ops" />
+        </div>
+      `;
+    } else if (type === 'team') {
+      modalBody.innerHTML = `
+        <div class="form-group">
+          <label>Team ID</label>
+          <input type="text" id="mID" value="${record?.id || ''}" ${record ? 'readonly' : ''} placeholder="team_eng" />
+        </div>
+        <div class="form-group">
+          <label>Team Name</label>
+          <input type="text" id="mName" value="${record?.name || ''}" placeholder="Engineering Team" />
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <input type="text" id="mDescription" value="${record?.description || ''}" placeholder="Core backend engineering team" />
+        </div>
+      `;
+    } else if (type === 'role') {
+      modalBody.innerHTML = `
+        <div class="form-group">
+          <label>Role ID</label>
+          <input type="text" id="mID" value="${record?.id || ''}" ${record ? 'readonly' : ''} placeholder="role_admin" />
+        </div>
+        <div class="form-group">
+          <label>Role Name</label>
+          <input type="text" id="mName" value="${record?.name || ''}" placeholder="Super Administrator" />
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <input type="text" id="mDescription" value="${record?.description || ''}" placeholder="Full admin privileges across all resources" />
+        </div>
+        <div class="form-group">
+          <label>Permissions (comma separated)</label>
+          <input type="text" id="mPermissions" value="${(record?.permissions || []).join(', ')}" placeholder="tenants:write, apps:write, keys:write" />
+        </div>
+      `;
     }
 
     modalOverlay.classList.remove('hidden');
@@ -538,6 +618,11 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (currentTab === 'apps') openEditModal('app', null);
     else if (currentTab === 'idps') openEditModal('idp', null);
     else if (currentTab === 'workloads') openEditModal('workload', null);
+    else if (currentTab === 'rbac') {
+      if (currentSubTab === 'rbac-users') openEditModal('user', null);
+      else if (currentSubTab === 'rbac-teams') openEditModal('team', null);
+      else if (currentSubTab === 'rbac-roles') openEditModal('role', null);
+    }
   }
 
   function closeModal() {
@@ -594,6 +679,34 @@ document.addEventListener('DOMContentLoaded', () => {
           version: expectedVersion
         };
         await api.saveWorkload(workloadData, expectedVersion);
+      } else if (type === 'user') {
+        const userData = {
+          id: document.getElementById('mID').value.trim(),
+          name: document.getElementById('mName').value.trim(),
+          email: document.getElementById('mEmail').value.trim(),
+          role_ids: document.getElementById('mRoles').value.split(',').map(s => s.trim()).filter(Boolean),
+          team_ids: document.getElementById('mTeams').value.split(',').map(s => s.trim()).filter(Boolean),
+          active: true,
+          version: expectedVersion
+        };
+        await api.saveUser(userData, expectedVersion);
+      } else if (type === 'team') {
+        const teamData = {
+          id: document.getElementById('mID').value.trim(),
+          name: document.getElementById('mName').value.trim(),
+          description: document.getElementById('mDescription').value.trim(),
+          version: expectedVersion
+        };
+        await api.saveTeam(teamData, expectedVersion);
+      } else if (type === 'role') {
+        const roleData = {
+          id: document.getElementById('mID').value.trim(),
+          name: document.getElementById('mName').value.trim(),
+          description: document.getElementById('mDescription').value.trim(),
+          permissions: document.getElementById('mPermissions').value.split(',').map(s => s.trim()).filter(Boolean),
+          version: expectedVersion
+        };
+        await api.saveRole(roleData, expectedVersion);
       }
 
       closeModal();
