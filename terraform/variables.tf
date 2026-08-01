@@ -35,9 +35,9 @@ variable "admin_subdomain" {
 }
 
 variable "manage_dns" {
-  description = "Set to true if using AWS Route53 for automated DNS validation record creation"
+  description = "Set to true if using AWS Route53 for automated DNS validation and routing record creation"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "s3_bucket_name" {
