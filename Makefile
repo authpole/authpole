@@ -20,8 +20,16 @@ build: build-go
 
 ## test: Run unit and race detection tests
 test:
-	@echo "🧪 Running test suite..."
+	@echo "🧪 Running Go test suite..."
 	go test -v -race ./...
+
+## test-web: Verify web app JavaScript syntax, DOM ID mappings, and OIDC/CORS endpoints
+test-web:
+	@echo "🌐 Verifying Web Application Stability..."
+	@node scripts/verify_webapp.js
+
+## verify: Full backend and frontend verification pipeline
+verify: test test-web
 
 ## build-docker: Build production Docker image
 build-docker:
