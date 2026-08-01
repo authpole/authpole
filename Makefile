@@ -67,11 +67,15 @@ build-unikraft:
 ## deploy-terraform: Deploy infrastructure to AWS using Terraform
 deploy-terraform:
 	@echo "☁️ Deploying Authpole infrastructure to AWS via Terraform..."
-	@cd terraform && \
-	if command -v terraform > /dev/null; then \
+	@if command -v terraform > /dev/null; then \
+		unset AWS_PROFILE && \
+		eval $$(aws configure export-credentials --format env 2>/dev/null || true) && \
+		cd terraform && \
 		terraform init && \
 		terraform plan -out=tfplan && \
-		echo "Execute 'cd terraform && terraform apply tfplan' to confirm deployment."; \
+		echo "=====================================================" && \
+		echo "Execute 'cd terraform && terraform apply tfplan' to complete deployment." && \
+		echo "====================================================="; \
 	else \
 		echo "⚠️ Terraform CLI not installed. Please install Terraform (https://terraform.io)."; \
 	fi
