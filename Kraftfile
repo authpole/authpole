@@ -1,0 +1,21 @@
+# Kraftfile - Unikraft Unikernel Specification for Authpole
+spec: '0.6'
+name: authpole
+
+unikraft:
+  version: stable
+  kconfig:
+    CONFIG_LIBGO: y
+    CONFIG_LIBNET: y
+    CONFIG_LIBLWIP: y
+    CONFIG_LIBPTHREAD: y
+
+targets:
+  - architecture: x86_64
+    platform: qemu
+  - architecture: x86_64
+    platform: fc
+  - architecture: x86_64
+    platform: kvm
+
+cmd: ["/authpole", "-port=8080"]

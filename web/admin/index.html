@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Auth Pole - Mediator IDP Admin Console</title>
+  <meta name="description" content="Modern high-performance mediator Identity Provider management console with S3 CAS concurrency control.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-icon">⚡</div>
+        <div class="brand-text">
+          <span class="brand-title">AUTH HUB</span>
+          <span class="brand-subtitle">MEDIATOR IDP CONSOLE</span>
+        </div>
+      </div>
+
+      <div class="tenant-selector-card">
+        <label for="tenantSelect" class="field-label">Active Tenant</label>
+        <div class="select-wrapper">
+          <select id="tenantSelect">
+            <option value="default">default (Default Tenant)</option>
+          </select>
+        </div>
+      </div>
+
+      <nav class="nav-menu">
+        <a href="#tenants" class="nav-item active" data-tab="tenants">
+          <span class="nav-icon">🏢</span> Tenants
+        </a>
+        <a href="#apps" class="nav-item" data-tab="apps">
+          <span class="nav-icon">📱</span> Applications (SPs)
+        </a>
+        <a href="#idps" class="nav-item" data-tab="idps">
+          <span class="nav-icon">🔗</span> Upstream IDPs
+        </a>
+        <a href="#keys" class="nav-item" data-tab="keys">
+          <span class="nav-icon">🔑</span> Signing Keys & JWKS
+        </a>
+        <a href="#rbac" class="nav-item" data-tab="rbac">
+          <span class="nav-icon">👥</span> Users, Teams & Roles
+        </a>
+        <a href="#workloads" class="nav-item" data-tab="workloads">
+          <span class="nav-icon">🤖</span> M2M & SPIFFE Workloads
+        </a>
+        <a href="#simulator" class="nav-item" data-tab="simulator">
+          <span class="nav-icon">🧪</span> Auth Flow & Token Lab
+        </a>
+      </nav>
+
+      <div class="server-config-card">
+        <div class="server-status">
+          <span class="status-dot online" id="statusDot"></span>
+          <span class="status-text" id="statusText">Connected</span>
+        </div>
+        <label for="apiHostInput" class="field-label" style="margin-top: 8px;">Auth Pole API Host</label>
+        <input type="text" id="apiHostInput" value="http://localhost:8080" class="input-sm" />
+        
+        <!-- OIDC Admin User Profile -->
+        <div id="oidcProfileCard" class="user-profile-card" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color);">
+          <div id="unauthProfileView">
+            <button id="oidcSignInBtn" class="btn btn-primary btn-block" style="padding: 0.4rem; font-size: 0.8rem;">
+              🔑 Sign In with OIDC
+            </button>
+          </div>
+          <div id="authProfileView" class="hidden">
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+              <div style="width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #0ea5e9, #6366f1); display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold;">👤</div>
+              <div style="overflow: hidden;">
+                <div id="adminUserName" style="font-weight: 700; font-size: 0.8rem; white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">Admin User</div>
+                <div id="adminUserEmail" style="font-size: 0.7rem; color: var(--text-muted); white-space: nowrap; text-overflow: ellipsis; overflow: hidden;">admin@authpole.io</div>
+              </div>
+            </div>
+            <button id="oidcSignOutBtn" class="btn btn-secondary btn-block" style="padding: 0.3rem; font-size: 0.75rem;">
+              🚪 Sign Out
+            </button>
+          </div>
+        </div>
+
+        <label for="adminTokenInput" class="field-label" style="margin-top: 8px;">Static Secret Fallback</label>
+        <input type="password" id="adminTokenInput" value="authpole_admin_secret_token_123" placeholder="Bearer Token" class="input-sm" />
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top Banner -->
+      <header class="top-header">
+        <div class="page-title-area">
+          <h1 id="pageTitle">Tenants</h1>
+          <p id="pageDescription" class="page-subtitle">Manage multi-tenant isolation units and domain settings.</p>
+        </div>
+        <div class="header-actions">
+          <button id="refreshBtn" class="btn btn-secondary">
+            <span>🔄</span> Refresh Data
+          </button>
+          <button id="createBtn" class="btn btn-primary">
+            <span>➕</span> New Record
+          </button>
+        </div>
+      </header>
+
+      <!-- Dynamic Tab Views -->
+      <section class="content-body">
+        <!-- Tenants Tab -->
+        <div id="tab-tenants" class="tab-pane active">
+          <div class="grid grid-cols-3" id="tenantsGrid">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Applications Tab -->
+        <div id="tab-apps" class="tab-pane">
+          <div class="table-card">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Application Name</th>
+                  <th>Client ID</th>
+                  <th>Redirect URIs</th>
+                  <th>Allowed Upstream IDPs</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="appsTableBody">
+                <!-- Rendered dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Upstream IDPs Tab -->
+        <div id="tab-idps" class="tab-pane">
+          <div class="grid grid-cols-2" id="idpsGrid">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Signing Keys & JWKS Tab -->
+        <div id="tab-keys" class="tab-pane">
+          <div class="card-section">
+            <div class="section-header">
+              <div>
+                <h2>Tenant Public JWKS (JSON Web Key Set)</h2>
+                <p class="subtitle">Downstream service providers download this public key set for zero-latency offline signature validation.</p>
+              </div>
+              <button id="downloadJwksBtn" class="btn btn-secondary">
+                <span>📥</span> Download JWKS JSON
+              </button>
+            </div>
+            <pre class="code-block" id="jwksCodeView">Loading JWKS...</pre>
+          </div>
+
+          <div class="section-header" style="margin-top: 2rem;">
+            <h2>Active RSA Signing Keys</h2>
+            <button id="generateKeyBtn" class="btn btn-primary">
+              <span>🔑</span> Generate New 2048-bit Key Pair
+            </button>
+          </div>
+          <div class="table-card">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Key ID (KID)</th>
+                  <th>Algorithm</th>
+                  <th>App ID</th>
+                  <th>Status</th>
+                  <th>Created At</th>
+                </tr>
+              </thead>
+              <tbody id="keysTableBody">
+                <!-- Rendered dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Users, Teams & Roles Tab (RBAC) -->
+        <div id="tab-rbac" class="tab-pane">
+          <div class="subnav">
+            <button class="subnav-btn active" data-subtab="rbac-users">Admin Users</button>
+            <button class="subnav-btn" data-subtab="rbac-teams">Teams</button>
+            <button class="subnav-btn" data-subtab="rbac-roles">Roles & Permissions</button>
+          </div>
+
+          <div id="subtab-rbac-users" class="subtab-pane active">
+            <div class="table-card">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>User</th>
+                    <th>Email</th>
+                    <th>Assigned Roles</th>
+                    <th>Teams</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="usersTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="subtab-rbac-teams" class="subtab-pane">
+            <div class="grid grid-cols-2" id="teamsGrid"></div>
+          </div>
+
+          <div id="subtab-rbac-roles" class="subtab-pane">
+            <div class="grid grid-cols-2" id="rolesGrid"></div>
+          </div>
+        </div>
+
+        <!-- SPIFFE M2M Workloads Tab -->
+        <div id="tab-workloads" class="tab-pane">
+          <div class="card-section" style="margin-bottom: 2rem;">
+            <div class="section-header">
+              <div>
+                <h2>SPIFFE Trust Bundle (Authorizing Machines)</h2>
+                <p class="subtitle">Authorizing machines fetch this trust bundle to refresh signing certs and validate machine SVID tokens offline.</p>
+              </div>
+              <button id="downloadSpiffeBundleBtn" class="btn btn-secondary">
+                <span>📦</span> Download SPIFFE Bundle
+              </button>
+            </div>
+            <pre class="code-block" id="spiffeBundleCodeView">Loading Trust Bundle...</pre>
+          </div>
+
+          <div class="table-card">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Workload Name</th>
+                  <th>SPIFFE ID URI</th>
+                  <th>Cert Fingerprint</th>
+                  <th>Allowed Scopes</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="workloadsTableBody">
+                <!-- Rendered dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Auth Flow Simulator Tab -->
+        <div id="tab-simulator" class="tab-pane">
+          <div class="grid grid-cols-2">
+            <div class="card">
+              <h2>⚡ Initiate Proxy Authorization Flow</h2>
+              <p class="subtitle">Simulate client application redirecting to Auth Pole mediator IDP.</p>
+              
+              <div class="form-group">
+                <label>Select Application</label>
+                <select id="simAppSelect"></select>
+              </div>
+              <div class="form-group">
+                <label>Client ID</label>
+                <input type="text" id="simClientID" value="demo_app" readonly />
+              </div>
+              <div class="form-group">
+                <label>Redirect URI</label>
+                <input type="text" id="simRedirectURI" value="http://localhost:8080/oauth/v2/mock_login" />
+              </div>
+              <div class="form-group">
+                <label>Requested Scope</label>
+                <input type="text" id="simScope" value="openid profile email" />
+              </div>
+              <button id="simStartBtn" class="btn btn-primary btn-block">
+                🚀 Launch Auth Login Flow
+              </button>
+            </div>
+
+            <div class="card">
+              <h2>🔍 Access Path JWT Validator</h2>
+              <p class="subtitle">Test zero-latency access path token verification.</p>
+
+              <div class="form-group">
+                <label>Auth Pole Bearer Token (JWT)</label>
+                <textarea id="simTokenInput" rows="5" placeholder="Paste Auth Pole JWT token here..."></textarea>
+              </div>
+              <button id="simValidateBtn" class="btn btn-secondary btn-block">
+                ⚡ Validate Token (Access Path)
+              </button>
+              
+              <div id="simValidationResult" class="result-box hidden"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Record Editor Modal -->
+  <div id="modalOverlay" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="modalTitle">Edit Record</h3>
+        <button id="modalCloseBtn" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody">
+        <!-- Rendered dynamically based on tab -->
+      </div>
+      <div class="modal-footer">
+        <div></div>
+        <div>
+          <button id="modalCancelBtn" class="btn btn-secondary">Cancel</button>
+          <button id="modalSaveBtn" class="btn btn-primary">Save Changes</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Conflict Alert Modal -->
+  <div id="casConflictOverlay" class="modal-overlay hidden" style="z-index: 1000;">
+    <div class="modal-card alert-modal">
+      <div class="alert-icon">⚠️</div>
+      <h3>Concurrent Update Detected</h3>
+      <p>This record was modified by another session since you loaded it.</p>
+      <p class="subtitle">To prevent overwriting concurrent updates, your change was paused. Please reload to view the latest data.</p>
+      <div class="modal-footer style-center">
+        <button id="casConflictRefreshBtn" class="btn btn-primary">
+          🔄 Reload Latest Data
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

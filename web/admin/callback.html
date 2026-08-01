@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Authpole Admin Console - OIDC Callback</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #070a12; color: #f8fafc; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+    .card { background: rgba(17, 24, 39, 0.8); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 2rem; width: 360px; text-align: center; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
+    h3 { color: #38bdf8; margin-top: 0; }
+    .spinner { border: 3px solid rgba(255,255,255,0.1); border-top-color: #38bdf8; border-radius: 50%; width: 36px; height: 36px; animation: spin 1s linear infinite; margin: 1.5rem auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error { color: #f43f5e; font-size: 0.9rem; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h3>⚡ Completing Admin OIDC Sign In</h3>
+    <div id="spinner" class="spinner"></div>
+    <p id="statusMsg" style="font-size: 0.85rem; color: #94a3b8;">Exchanging authorization code for OIDC admin tokens...</p>
+    <div id="errorBox" class="error"></div>
+  </div>
+
+  <script>
+    async function processCallback() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const code = urlParams.get('code');
+      const tenant = urlParams.get('tenant') || 'default';
+      const apiHost = localStorage.getItem('authpole_api_host') || 'http://localhost:8080';
+
+      if (!code) {
+        document.getElementById('errorBox').textContent = 'Error: No authorization code received.';
+        document.getElementById('spinner').style.display = 'none';
+        return;
+      }
+
+      try {
+        const formData = new URLSearchParams();
+        formData.append('grant_type', 'authorization_code');
+        formData.append('client_id', 'admin_console');
+        formData.append('client_secret', 'admin_console_secret');
+        formData.append('code', code);
+        formData.append('tenant', tenant);
+
+        const response = await fetch(`${apiHost.replace(/\/$/, '')}/oauth/v2/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: formData
+        });
+
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.message || 'Token exchange failed');
+        }
+
+        const data = await response.json();
+        
+        // Save OIDC tokens in localStorage
+        localStorage.setItem('authpole_admin_token', data.access_token);
+        localStorage.setItem('authpole_id_token', data.id_token);
+        
+        document.getElementById('statusMsg').textContent = 'Authentication successful! Redirecting to Admin Console...';
+        
+        setTimeout(() => {
+          window.location.href = 'index.html';
+        }, 800);
+
+      } catch (err) {
+        document.getElementById('spinner').style.display = 'none';
+        document.getElementById('errorBox').textContent = `Authentication Error: ${err.message}`;
+      }
+    }
+
+    processCallback();
+  </script>
+</body>
+</html>

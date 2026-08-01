@@ -1,0 +1,6 @@
+.git
+.gitignore
+bin/
+data/
+terraform/
+*.md
