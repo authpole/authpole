@@ -467,7 +467,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
-  function openEditModal(type, record) {
+  async function openEditModal(type, record) {
     editingRecord = { type, record };
     modalTitle.textContent = `Edit ${type.toUpperCase()} Settings`;
 
@@ -646,7 +646,7 @@ document.addEventListener('DOMContentLoaded', () => {
     modalOverlay.classList.remove('hidden');
   }
 
-  function openCreateModal() {
+  async function openCreateModal() {
     if (currentTab === 'tenants') openEditModal('tenant', null);
     else if (currentTab === 'apps') openEditModal('app', null);
     else if (currentTab === 'idps') openEditModal('idp', null);
