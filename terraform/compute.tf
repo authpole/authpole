@@ -142,13 +142,38 @@ resource "aws_launch_template" "authpole_lt" {
 
   user_data = base64encode(<<-EOF
               #!/bin/bash
-              yum install -y docker
-              systemctl start docker
-              systemctl enable docker
-              docker run -d --name authpole -p 8080:8080 \
-                -e S3_BUCKET=${aws_s3_bucket.authpole_storage.id} \
-                -e AWS_REGION=${var.aws_region} \
-                authpole:latest -port=8080 -s3-bucket=${aws_s3_bucket.authpole_storage.id}
+              exec > /var/log/user-data.log 2>&1
+              echo "Starting Authpole installation..."
+              yum update -y
+              yum install -y golang git
+
+              mkdir -p /opt/authpole
+              cd /opt/authpole
+              git clone https://github.com/authpole/authpole.git .
+              go build -o authpole ./cmd/server
+
+              cat <<'SERVICE' > /etc/systemd/system/authpole.service
+              [Unit]
+              Description=Authpole Mediator Proxy IDP Server
+              After=network.target
+
+              [Service]
+              Type=simple
+              User=root
+              WorkingDirectory=/opt/authpole
+              ExecStart=/opt/authpole/authpole -port=8080 -s3-bucket=${aws_s3_bucket.authpole_storage.id}
+              Restart=always
+              RestartSec=5
+              Environment=AWS_REGION=${var.aws_region}
+              Environment=S3_BUCKET=${aws_s3_bucket.authpole_storage.id}
+
+              [Install]
+              WantedBy=multi-user.target
+              SERVICE
+
+              systemctl daemon-reload
+              systemctl enable --now authpole
+              echo "Authpole service started successfully!"
               EOF
   )
 
