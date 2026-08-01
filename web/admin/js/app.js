@@ -552,6 +552,25 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
       `;
     } else if (type === 'user') {
+      const { data: availableRoles } = await api.getRoles();
+      const { data: availableTeams } = await api.getTeams();
+      const assignedRoles = record?.role_ids || [];
+      const assignedTeams = record?.team_ids || [];
+
+      const rolesHTML = (availableRoles || []).map(r => `
+        <label class="checkbox-label">
+          <input type="checkbox" name="mUserRoles" value="${r.id}" ${assignedRoles.includes(r.id) ? 'checked' : ''} />
+          <span><strong>${r.name}</strong> <span class="code-inline" style="font-size:0.75rem">${r.id}</span></span>
+        </label>
+      `).join('') || '<div style="font-size:0.8rem; color:var(--text-muted);">No roles available. Create a role first.</div>';
+
+      const teamsHTML = (availableTeams || []).map(t => `
+        <label class="checkbox-label">
+          <input type="checkbox" name="mUserTeams" value="${t.id}" ${assignedTeams.includes(t.id) ? 'checked' : ''} />
+          <span><strong>${t.name}</strong> <span class="code-inline" style="font-size:0.75rem">${t.id}</span></span>
+        </label>
+      `).join('') || '<div style="font-size:0.8rem; color:var(--text-muted);">No teams available. Create a team first.</div>';
+
       modalBody.innerHTML = `
         <div class="form-group">
           <label>User ID</label>
@@ -566,15 +585,25 @@ document.addEventListener('DOMContentLoaded', () => {
           <input type="email" id="mEmail" value="${record?.email || ''}" placeholder="alex@example.com" />
         </div>
         <div class="form-group">
-          <label>Assigned Role IDs (comma separated)</label>
-          <input type="text" id="mRoles" value="${(record?.role_ids || []).join(', ')}" placeholder="admin, developer" />
+          <label>Select Roles</label>
+          <div class="select-list-box">${rolesHTML}</div>
         </div>
         <div class="form-group">
-          <label>Assigned Team IDs (comma separated)</label>
-          <input type="text" id="mTeams" value="${(record?.team_ids || []).join(', ')}" placeholder="engineering, ops" />
+          <label>Select Teams</label>
+          <div class="select-list-box">${teamsHTML}</div>
         </div>
       `;
     } else if (type === 'team') {
+      const { data: availableRoles } = await api.getRoles();
+      const assignedRoles = record?.role_ids || [];
+
+      const rolesHTML = (availableRoles || []).map(r => `
+        <label class="checkbox-label">
+          <input type="checkbox" name="mTeamRoles" value="${r.id}" ${assignedRoles.includes(r.id) ? 'checked' : ''} />
+          <span><strong>${r.name}</strong> <span class="code-inline" style="font-size:0.75rem">${r.id}</span></span>
+        </label>
+      `).join('') || '<div style="font-size:0.8rem; color:var(--text-muted);">No roles available. Create a role first.</div>';
+
       modalBody.innerHTML = `
         <div class="form-group">
           <label>Team ID</label>
@@ -587,6 +616,10 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="form-group">
           <label>Description</label>
           <input type="text" id="mDescription" value="${record?.description || ''}" placeholder="Core backend engineering team" />
+        </div>
+        <div class="form-group">
+          <label>Select Team Roles</label>
+          <div class="select-list-box">${rolesHTML}</div>
         </div>
       `;
     } else if (type === 'role') {
@@ -680,21 +713,27 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         await api.saveWorkload(workloadData, expectedVersion);
       } else if (type === 'user') {
+        const selectedRoles = Array.from(document.querySelectorAll('input[name="mUserRoles"]:checked')).map(cb => cb.value);
+        const selectedTeams = Array.from(document.querySelectorAll('input[name="mUserTeams"]:checked')).map(cb => cb.value);
+
         const userData = {
           id: document.getElementById('mID').value.trim(),
           name: document.getElementById('mName').value.trim(),
           email: document.getElementById('mEmail').value.trim(),
-          role_ids: document.getElementById('mRoles').value.split(',').map(s => s.trim()).filter(Boolean),
-          team_ids: document.getElementById('mTeams').value.split(',').map(s => s.trim()).filter(Boolean),
+          role_ids: selectedRoles,
+          team_ids: selectedTeams,
           active: true,
           version: expectedVersion
         };
         await api.saveUser(userData, expectedVersion);
       } else if (type === 'team') {
+        const selectedRoles = Array.from(document.querySelectorAll('input[name="mTeamRoles"]:checked')).map(cb => cb.value);
+
         const teamData = {
           id: document.getElementById('mID').value.trim(),
           name: document.getElementById('mName').value.trim(),
           description: document.getElementById('mDescription').value.trim(),
+          role_ids: selectedRoles,
           version: expectedVersion
         };
         await api.saveTeam(teamData, expectedVersion);
