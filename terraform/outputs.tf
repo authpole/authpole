@@ -3,6 +3,26 @@ output "alb_dns_name" {
   value       = aws_lb.authpole_alb.dns_name
 }
 
+output "api_url" {
+  description = "Production Authpole Server API HTTPS URL"
+  value       = "https://${var.api_subdomain}"
+}
+
+output "admin_ui_url" {
+  description = "Production Authpole Admin Console UI HTTPS URL"
+  value       = "https://${var.admin_subdomain}"
+}
+
+output "cloudfront_domain_name" {
+  description = "CloudFront CDN domain name for Admin Console UI"
+  value       = aws_cloudfront_distribution.admin_ui_cdn.domain_name
+}
+
+output "acm_certificate_arn" {
+  description = "ACM SSL/TLS Certificate ARN"
+  value       = aws_acm_certificate.domain_cert.arn
+}
+
 output "s3_bucket_name" {
   description = "AWS S3 Bucket name created for Authpole CAS storage"
   value       = aws_s3_bucket.authpole_storage.id
