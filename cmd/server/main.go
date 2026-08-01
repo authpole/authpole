@@ -197,7 +197,7 @@ func seedInitialData(store storage.Storage, c *cache.MemoryCache) {
 			ID:          "core_ops",
 			TenantID:    "default",
 			Name:        "Core Operations Team",
-			Description: "Platform operations and auth hub configuration maintainers",
+			Description: "Platform operations and auth pole configuration maintainers",
 			RoleIDs:     []string{"super_admin"},
 			CreatedAt:   time.Now(),
 			UpdatedAt:   time.Now(),
