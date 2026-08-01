@@ -131,7 +131,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       btn.classList.add('active');
       currentSubTab = btn.dataset.subtab;
-      document.getElementById(currentSubTab).classList.add('active');
+      const subtabPane = document.getElementById(`subtab-${currentSubTab}`) || document.getElementById(currentSubTab);
+      if (subtabPane) {
+        subtabPane.classList.add('active');
+      }
       loadCurrentTabData();
     });
   });
