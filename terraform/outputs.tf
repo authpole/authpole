@@ -23,6 +23,22 @@ output "acm_certificate_arn" {
   value       = aws_acm_certificate.domain_cert.arn
 }
 
+output "acm_certificate_status" {
+  description = "ACM Certificate Validation Status"
+  value       = aws_acm_certificate.domain_cert.status
+}
+
+output "acm_dns_validation_records" {
+  description = "CNAME DNS validation records required by AWS ACM to issue the SSL certificate"
+  value = {
+    for dvo in aws_acm_certificate.domain_cert.domain_validation_options : dvo.domain_name => {
+      name  = dvo.resource_record_name
+      type  = dvo.resource_record_type
+      value = dvo.resource_record_value
+    }
+  }
+}
+
 output "s3_bucket_name" {
   description = "AWS S3 Bucket name created for Authpole CAS storage"
   value       = aws_s3_bucket.authpole_storage.id
