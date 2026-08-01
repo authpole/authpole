@@ -94,11 +94,30 @@ resource "aws_lb_target_group" "authpole_tg" {
   }
 }
 
-# ALB Listener
+# ALB HTTP Listener (Port 80 Redirect to HTTPS 443)
 resource "aws_lb_listener" "http_listener" {
   load_balancer_arn = aws_lb.authpole_alb.arn
   port              = 80
   protocol          = "HTTP"
+
+  default_action {
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+# ALB HTTPS Listener (Port 443 with ACM Certificate for authpole.swii.sh)
+resource "aws_lb_listener" "https_listener" {
+  load_balancer_arn = aws_lb.authpole_alb.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = aws_acm_certificate.domain_cert.arn
 
   default_action {
     type             = "forward"
