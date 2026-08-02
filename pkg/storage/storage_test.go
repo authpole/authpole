@@ -22,8 +22,8 @@ func TestMemoryCASStorage(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	key := "tenants/test_tenant/metadata.json"
-	data1 := []byte(`{"id":"test_tenant","name":"Initial Tenant Name"}`)
+	key := "organizations/test_org/metadata.json"
+	data1 := []byte(`{"id":"test_org","name":"Initial Organization Name"}`)
 
 	// 1. Initial Put (no expected version)
 	v1, err := store.Put(ctx, key, data1, "")
@@ -44,7 +44,7 @@ func TestMemoryCASStorage(t *testing.T) {
 	}
 
 	// 3. Stale Put with wrong expected version -> Must fail with ErrVersionMismatch (409 Conflict)
-	data2 := []byte(`{"id":"test_tenant","name":"Conflicting Update"}`)
+	data2 := []byte(`{"id":"test_org","name":"Conflicting Update"}`)
 	_, err = store.Put(ctx, key, data2, "invalid_stale_version_999")
 	if !errors.Is(err, storage.ErrVersionMismatch) {
 		t.Fatalf("Expected ErrVersionMismatch on stale CAS put, got: %v", err)

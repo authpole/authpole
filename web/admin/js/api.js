@@ -1,9 +1,10 @@
 class AuthPoleAPI {
-  constructor(getApiHostFn, getTenantFn, getAdminTokenFn, onCASConflictFn) {
+  constructor(getApiHostFn, getOrganizationFn, getAdminTokenFn, onCASConflictFn, onUnauthorizedFn) {
     this.getApiHost = getApiHostFn;
-    this.getTenant = getTenantFn;
+    this.getOrganization = getOrganizationFn;
     this.getAdminToken = getAdminTokenFn;
     this.onCASConflict = onCASConflictFn;
+    this.onUnauthorized = onUnauthorizedFn;
   }
 
   async request(endpoint, options = {}) {
@@ -11,7 +12,7 @@ class AuthPoleAPI {
     const url = `${apiHost}${endpoint}`;
 
     const headers = options.headers || {};
-    headers['X-Tenant-ID'] = this.getTenant();
+    headers['X-Organization-ID'] = this.getOrganization();
     
     const adminToken = this.getAdminToken ? this.getAdminToken() : '';
     if (adminToken && !headers['Authorization']) {
@@ -30,6 +31,12 @@ class AuthPoleAPI {
     try {
       const response = await fetch(url, config);
       const versionHeader = response.headers.get('ETag');
+
+      if (response.status === 401) {
+        if (this.onUnauthorized) {
+          this.onUnauthorized();
+        }
+      }
 
       if (response.status === 409) {
         // CAS Version Conflict detected!
@@ -57,7 +64,7 @@ class AuthPoleAPI {
       const text = await response.text();
       return { data: text, version: versionHeader };
     } catch (err) {
-      if (err.message.includes('cas_conflict')) {
+      if (err.message && err.message.includes('cas_conflict')) {
         throw err;
       }
       console.error(`API Error on ${endpoint}:`, err);
@@ -65,14 +72,15 @@ class AuthPoleAPI {
     }
   }
 
-  // Tenants API
-  async getTenants() { return this.request('/api/v1/tenants'); }
-  async getTenant(id) { return this.request(`/api/v1/tenants/${id}`); }
-  async saveTenant(tenant, expectedVersion) {
-    return this.request('/api/v1/tenants', {
+  // Organizations API
+  async getOrganizations() { return this.request('/api/v1/organizations'); }
+  async getUserOrganizations() { return this.request('/api/v1/user/organizations'); }
+  async getOrganization(id) { return this.request(`/api/v1/organizations/${id}`); }
+  async saveOrganization(org, expectedVersion) {
+    return this.request('/api/v1/organizations', {
       method: 'POST',
       headers: expectedVersion ? { 'X-Expected-Version': expectedVersion } : {},
-      body: JSON.stringify(tenant)
+      body: JSON.stringify(org)
     });
   }
 
@@ -101,7 +109,7 @@ class AuthPoleAPI {
   async generateKey(appID) {
     return this.request(`/api/v1/keys?app_id=${encodeURIComponent(appID || '')}`, { method: 'POST' });
   }
-  async getJWKS() { return this.request(`/.well-known/jwks.json?tenant=${encodeURIComponent(this.getTenant())}`); }
+  async getJWKS() { return this.request(`/.well-known/jwks.json?organization=${encodeURIComponent(this.getOrganization())}`); }
 
   // RBAC API
   async getUsers() { return this.request('/api/v1/admin/users'); }
@@ -109,6 +117,12 @@ class AuthPoleAPI {
     return this.request('/api/v1/admin/users', {
       method: 'POST',
       headers: expectedVersion ? { 'X-Expected-Version': expectedVersion } : {},
+      body: JSON.stringify(user)
+    });
+  }
+  async inviteUser(user) {
+    return this.request('/api/v1/admin/users/invite', {
+      method: 'POST',
       body: JSON.stringify(user)
     });
   }
@@ -140,7 +154,7 @@ class AuthPoleAPI {
       body: JSON.stringify(workload)
     });
   }
-  async getSPIFFEBundle() { return this.request(`/.well-known/spiffe/bundle?tenant=${encodeURIComponent(this.getTenant())}`); }
+  async getSPIFFEBundle() { return this.request(`/.well-known/spiffe/bundle?organization=${encodeURIComponent(this.getOrganization())}`); }
 
   // Access Path Validation
   async validateToken(token, appID) {
@@ -149,7 +163,7 @@ class AuthPoleAPI {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${token}`,
-        'X-Tenant-ID': this.getTenant(),
+        'X-Organization-ID': this.getOrganization(),
         'X-App-ID': appID || ''
       }
     });

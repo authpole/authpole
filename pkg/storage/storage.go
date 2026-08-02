@@ -32,35 +32,43 @@ type Storage interface {
 }
 
 // StorageKey helper functions to standardize object key formats in S3
-func TenantKey(tenantID string) string {
-	return fmt.Sprintf("tenants/%s/metadata.json", tenantID)
+func OrganizationKey(orgID string) string {
+	return fmt.Sprintf("organizations/%s/metadata.json", orgID)
 }
 
-func AppKey(tenantID, appID string) string {
-	return fmt.Sprintf("tenants/%s/apps/%s.json", tenantID, appID)
+func AppKey(orgID, appID string) string {
+	return fmt.Sprintf("organizations/%s/apps/%s.json", orgID, appID)
 }
 
-func IDPKey(tenantID, idpID string) string {
-	return fmt.Sprintf("tenants/%s/idps/%s.json", tenantID, idpID)
+func IDPKey(orgID, idpID string) string {
+	return fmt.Sprintf("organizations/%s/idps/%s.json", orgID, idpID)
 }
 
-func KeyPairKey(tenantID, keyID string) string {
-	return fmt.Sprintf("tenants/%s/keys/%s.json", tenantID, keyID)
+func KeyPairKey(orgID, keyID string) string {
+	return fmt.Sprintf("organizations/%s/keys/%s.json", orgID, keyID)
 }
 
-func AdminUserKey(tenantID, userID string) string {
-	return fmt.Sprintf("tenants/%s/admin/users/%s.json", tenantID, userID)
+func AdminUserKey(orgID, userID string) string {
+	return fmt.Sprintf("organizations/%s/admin/users/%s.json", orgID, userID)
 }
 
-func TeamKey(tenantID, teamID string) string {
-	return fmt.Sprintf("tenants/%s/admin/teams/%s.json", tenantID, teamID)
+func TeamKey(orgID, teamID string) string {
+	return fmt.Sprintf("organizations/%s/admin/teams/%s.json", orgID, teamID)
 }
 
-func RoleKey(tenantID, roleID string) string {
-	return fmt.Sprintf("tenants/%s/admin/roles/%s.json", tenantID, roleID)
+func RoleKey(orgID, roleID string) string {
+	return fmt.Sprintf("organizations/%s/admin/roles/%s.json", orgID, roleID)
 }
 
-func SPIFFEWorkloadKey(tenantID, workloadID string) string {
-	return fmt.Sprintf("tenants/%s/spiffe/workloads/%s.json", tenantID, workloadID)
+func SPIFFEWorkloadKey(orgID, workloadID string) string {
+	return fmt.Sprintf("organizations/%s/spiffe/workloads/%s.json", orgID, workloadID)
+}
+
+func AuthStateKey(stateID string) string {
+	return fmt.Sprintf("sessions/states/%s.json", stateID)
+}
+
+func AuthCodeKey(code string) string {
+	return fmt.Sprintf("sessions/codes/%s.json", code)
 }
 

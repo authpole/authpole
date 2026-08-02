@@ -9,11 +9,11 @@ import (
 )
 
 func TestCryptoJWTAndJWKS(t *testing.T) {
-	tenantID := "tenant_acme"
+	orgID := "org_acme"
 	appID := "app_portal"
 
 	// 1. Generate RSA key pair
-	keyPair, err := crypto.GenerateRSAKeyPair(tenantID, appID)
+	keyPair, err := crypto.GenerateRSAKeyPair(orgID, appID)
 	if err != nil {
 		t.Fatalf("GenerateRSAKeyPair failed: %v", err)
 	}
@@ -33,15 +33,15 @@ func TestCryptoJWTAndJWKS(t *testing.T) {
 
 	// 3. Sign JWT
 	claims := &models.AuthClaims{
-		Subject:       "user_123",
-		Issuer:        "https://authpole.io/tenants/" + tenantID,
-		Audience:      appID,
-		TenantID:      tenantID,
-		AppID:         appID,
-		OriginalIDP:   "google",
-		Email:         "user@example.com",
-		IssuedAt:      time.Now().Unix(),
-		ExpiresAt:     time.Now().Add(1 * time.Hour).Unix(),
+		Subject:        "user_123",
+		Issuer:         "https://authpole.io/organizations/" + orgID,
+		Audience:       appID,
+		OrganizationID: orgID,
+		AppID:          appID,
+		OriginalIDP:    "google",
+		Email:          "user@example.com",
+		IssuedAt:       time.Now().Unix(),
+		ExpiresAt:      time.Now().Add(1 * time.Hour).Unix(),
 	}
 
 	tokenStr, err := crypto.SignJWT(claims, keyPair.PrivateKeyPEM, keyPair.KID)

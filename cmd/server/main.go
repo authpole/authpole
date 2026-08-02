@@ -7,7 +7,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +30,8 @@ func main() {
 	if envPort := os.Getenv("PORT"); envPort != "" {
 		*port = envPort
 	}
+
+	loadOAuthCredentialsFromSSM()
 
 	var store storage.Storage
 	var err error
@@ -65,7 +69,7 @@ func main() {
 		log.Printf("🤖 SPIFFE SVID Issue: http://localhost:%s/api/v1/spiffe/svid", *port)
 		log.Printf("📦 SPIFFE Bundle:    http://localhost:%s/.well-known/spiffe/bundle", *port)
 		log.Printf("⚡ Access Path:      http://localhost:%s/api/v1/auth/validate", *port)
-		log.Printf("⚙️ Admin API:        http://localhost:%s/api/v1/tenants", *port)
+		log.Printf("⚙️ Admin API:        http://localhost:%s/api/v1/organizations", *port)
 		log.Printf("=====================================================")
 
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -74,50 +78,56 @@ func main() {
 	}()
 
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-	<-stop
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGHUP)
+	sig := <-stop
 
-	log.Println("Shutting down Auth Pole gracefully...")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	log.Printf("Received signal %v. Shutting down Auth Pole gracefully...", sig)
+	httpServer.SetKeepAlivesEnabled(false)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_ = httpServer.Shutdown(ctx)
+	if err := httpServer.Shutdown(ctx); err != nil {
+		log.Printf("Graceful shutdown timeout (%v), forcing server close...", err)
+		_ = httpServer.Close()
+	}
 	log.Println("Server stopped cleanly.")
+	os.Exit(0)
 }
 
 func seedInitialData(store storage.Storage, c *cache.MemoryCache) {
 	ctx := context.Background()
 
-	// Check if default tenant exists
-	tenantKey := storage.TenantKey("default")
-	_, err := store.Get(ctx, tenantKey)
+	// Check if default organization exists
+	orgKey := storage.OrganizationKey("default")
+	_, err := store.Get(ctx, orgKey)
 	if err == storage.ErrNotFound {
-		log.Println("Seeding default tenant, application, upstream IDP, and signing keys...")
+		log.Println("Seeding default organization, application, upstream IDP, and signing keys...")
 
-		// 1. Default Tenant
-		tenant := &models.Tenant{
+		// 1. Default Organization
+		org := &models.Organization{
 			ID:        "default",
-			Name:      "Default Tenant",
+			Name:      "Default Organization",
 			Domain:    "authpole.local",
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
 		}
-		tBytes, _ := json.Marshal(tenant)
-		tVer, _ := store.Put(ctx, tenantKey, tBytes, "")
-		tenant.Version = tVer
+		tBytes, _ := json.Marshal(org)
+		tVer, _ := store.Put(ctx, orgKey, tBytes, "")
+		org.Version = tVer
 
 		// 2. Default Application
 		app := &models.Application{
-			ID:           "demo_app",
-			TenantID:     "default",
-			Name:         "Demo Client App",
-			ClientID:     "demo_app",
-			ClientSecret: "secret_12345",
-			RedirectURIs: []string{"http://localhost:3000/callback", "http://localhost:8080/oauth/v2/mock_login"},
-			AllowedIDPs:  []string{"mock_idp"},
-			Scopes:       []string{"openid", "profile", "email"},
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			ID:             "demo_app",
+			OrganizationID: "default",
+			Name:           "Demo Client App",
+			ClientID:       "demo_app",
+			ClientSecret:   "secret_12345",
+			RedirectURIs:   []string{"http://localhost:3000/callback", "http://localhost:8080/oauth/v2/mock_login"},
+			AllowedIDPs:    []string{"mock_idp"},
+			Scopes:         []string{"openid", "profile", "email"},
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
 		}
 		aBytes, _ := json.Marshal(app)
 		aVer, _ := store.Put(ctx, storage.AppKey("default", "demo_app"), aBytes, "")
@@ -126,36 +136,62 @@ func seedInitialData(store storage.Storage, c *cache.MemoryCache) {
 
 		// 2b. System Admin Console Application
 		adminApp := &models.Application{
-			ID:           "admin_console",
-			TenantID:     "default",
-			Name:         "Authpole Admin Console",
-			ClientID:     "admin_console",
-			ClientSecret: "admin_console_secret",
-			RedirectURIs: []string{"http://localhost:3000", "http://localhost:3000/callback.html", "http://localhost:8080/admin/"},
-			AllowedIDPs:  []string{"mock_idp"},
-			Scopes:       []string{"openid", "profile", "email"},
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			ID:             "admin_console",
+			OrganizationID: "default",
+			Name:           "Authpole Admin Console",
+			ClientID:       "admin_console",
+			ClientSecret:   "admin_console_secret",
+			RedirectURIs: []string{
+				"http://localhost:3000",
+				"http://localhost:3000/callback.html",
+				"http://localhost:8080/admin/",
+				"https://authpole-admin.swii.sh",
+				"https://authpole-admin.swii.sh/callback.html",
+			},
+			AllowedIDPs: []string{"google", "github"},
+			Scopes:      []string{"openid", "profile", "email"},
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
 		}
 		adminAppBytes, _ := json.Marshal(adminApp)
 		adminAppVer, _ := store.Put(ctx, storage.AppKey("default", "admin_console"), adminAppBytes, "")
 		adminApp.Version = adminAppVer
 		c.SetApp("default", "admin_console", adminApp, 1*time.Hour)
 
-		// 3. Upstream IDP
-		idp := &models.IdentityProvider{
-			ID:        "mock_idp",
-			TenantID:  "default",
-			Name:      "Demo Upstream IDP",
-			Type:      "mock",
-			ClientID:  "auth_hub_proxy",
-			Scopes:    []string{"openid", "profile", "email"},
-			Enabled:   true,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+		// 3. Upstream IDPs (Google, GitHub)
+		idpGoogle := &models.IdentityProvider{
+			ID:             "google",
+			OrganizationID: "default",
+			Name:           "Google Workspace",
+			Type:           "oidc",
+			ClientID:       "google_oauth_client_id.apps.googleusercontent.com",
+			ClientSecret:   "google_oauth_client_secret",
+			AuthorizeURL:   "https://accounts.google.com/o/oauth2/v2/auth",
+			TokenURL:       "https://oauth2.googleapis.com/token",
+			Scopes:         []string{"openid", "profile", "email"},
+			Enabled:        true,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
 		}
-		iBytes, _ := json.Marshal(idp)
-		_, _ = store.Put(ctx, storage.IDPKey("default", "mock_idp"), iBytes, "")
+		iGoogleBytes, _ := json.Marshal(idpGoogle)
+		_, _ = store.Put(ctx, storage.IDPKey("default", "google"), iGoogleBytes, "")
+
+		idpGithub := &models.IdentityProvider{
+			ID:             "github",
+			OrganizationID: "default",
+			Name:           "GitHub Enterprise",
+			Type:           "oauth2",
+			ClientID:       "github_oauth_client_id",
+			ClientSecret:   "github_oauth_client_secret",
+			AuthorizeURL:   "https://github.com/login/oauth/authorize",
+			TokenURL:       "https://github.com/login/oauth/access_token",
+			Scopes:         []string{"user:email", "read:user"},
+			Enabled:        true,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+		}
+		iGithubBytes, _ := json.Marshal(idpGithub)
+		_, _ = store.Put(ctx, storage.IDPKey("default", "github"), iGithubBytes, "")
 
 		// 4. Default RSA Key Pair
 		keyPair, err := crypto.GenerateRSAKeyPair("default", "demo_app")
@@ -168,39 +204,40 @@ func seedInitialData(store storage.Storage, c *cache.MemoryCache) {
 
 		// 5. Default Admin User, Team, and Role
 		adminUser := &models.AdminUser{
-			ID:        "admin_root",
-			TenantID:  "default",
-			Email:     "admin@authpole.io",
-			Name:      "System Admin",
-			RoleIDs:   []string{"super_admin"},
-			TeamIDs:   []string{"core_ops"},
-			Active:    true,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
+			ID:             "admin_root",
+			OrganizationID: "default",
+			Email:          "admin@authpole.io",
+			Name:           "System Admin",
+			RoleIDs:        []string{"super_admin"},
+			TeamIDs:        []string{"core_ops"},
+			Active:         true,
+			Status:         "active",
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
 		}
 		uBytes, _ := json.Marshal(adminUser)
 		_, _ = store.Put(ctx, storage.AdminUserKey("default", adminUser.ID), uBytes, "")
 
 		role := &models.Role{
-			ID:          "super_admin",
-			TenantID:    "default",
-			Name:        "Super Administrator",
-			Description: "Full access to all Auth Pole tenant configurations and settings",
-			Permissions: []string{"tenant:read", "tenant:write", "app:manage", "idp:manage", "keys:manage"},
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
+			ID:             "super_admin",
+			OrganizationID: "default",
+			Name:           "Super Administrator",
+			Description:    "Full access to all Auth Pole organization configurations and settings",
+			Permissions:    []string{"organization:read", "organization:write", "app:manage", "idp:manage", "keys:manage"},
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
 		}
 		rBytes, _ := json.Marshal(role)
 		_, _ = store.Put(ctx, storage.RoleKey("default", role.ID), rBytes, "")
 
 		team := &models.Team{
-			ID:          "core_ops",
-			TenantID:    "default",
-			Name:        "Core Operations Team",
-			Description: "Platform operations and auth pole configuration maintainers",
-			RoleIDs:     []string{"super_admin"},
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
+			ID:             "core_ops",
+			OrganizationID: "default",
+			Name:           "Core Operations Team",
+			Description:    "Platform operations and auth pole configuration maintainers",
+			RoleIDs:        []string{"super_admin"},
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
 		}
 		tmBytes, _ := json.Marshal(team)
 		_, _ = store.Put(ctx, storage.TeamKey("default", team.ID), tmBytes, "")
@@ -208,7 +245,7 @@ func seedInitialData(store storage.Storage, c *cache.MemoryCache) {
 		// 6. Default SPIFFE Workload Identity
 		spiffeWorkload := &models.SPIFFEWorkload{
 			ID:               "payment_service",
-			TenantID:         "default",
+			OrganizationID:   "default",
 			SPIFFEID:         "spiffe://authpole.local/ns/default/sa/payment-service",
 			Name:             "Payment Processing Service",
 			AllowedScopes:    []string{"read:transactions", "write:payments"},
@@ -219,5 +256,40 @@ func seedInitialData(store storage.Storage, c *cache.MemoryCache) {
 		}
 		swBytes, _ := json.Marshal(spiffeWorkload)
 		_, _ = store.Put(ctx, storage.SPIFFEWorkloadKey("default", spiffeWorkload.ID), swBytes, "")
+	}
+}
+
+func loadOAuthCredentialsFromSSM() {
+	region := os.Getenv("AWS_REGION")
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	params := []struct {
+		envKey   string
+		ssmName  string
+		isSecret bool
+	}{
+		{"AUTHPOLE_GOOGLE_CLIENT_ID", "/authpole/production/google_client_id", false},
+		{"AUTHPOLE_GOOGLE_CLIENT_SECRET", "/authpole/production/google_client_secret", true},
+		{"AUTHPOLE_GITHUB_CLIENT_ID", "/authpole/production/github_client_id", false},
+		{"AUTHPOLE_GITHUB_CLIENT_SECRET", "/authpole/production/github_client_secret", true},
+	}
+
+	for _, p := range params {
+		if os.Getenv(p.envKey) == "" {
+			args := []string{"ssm", "get-parameter", "--name", p.ssmName, "--query", "Parameter.Value", "--output", "text", "--region", region}
+			if p.isSecret {
+				args = append(args, "--with-decryption")
+			}
+			out, err := exec.Command("aws", args...).Output()
+			if err == nil {
+				val := strings.TrimSpace(string(out))
+				if val != "" && val != "None" {
+					os.Setenv(p.envKey, val)
+					log.Printf("Loaded %s from AWS SSM Parameter Store (%s)", p.envKey, p.ssmName)
+				}
+			}
+		}
 	}
 }

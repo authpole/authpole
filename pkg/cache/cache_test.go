@@ -9,21 +9,21 @@ import (
 )
 
 func TestShardsAndCache(t *testing.T) {
-	tenantID := "tenant_fintech"
+	orgID := "org_fintech"
 	appID := "app_mobile"
 
 	// Test sharding key excludes KeyID to minimize cluster memory footprint
-	shardKey := cache.ShardKey(tenantID, appID)
-	if shardKey != "tenant_fintech:app_mobile" {
+	shardKey := cache.ShardKey(orgID, appID)
+	if shardKey != "org_fintech:app_mobile" {
 		t.Fatalf("Unexpected shard key format: %s", shardKey)
 	}
 
-	hashVal := cache.ShardHash(tenantID, appID)
+	hashVal := cache.ShardHash(orgID, appID)
 	if hashVal == 0 {
 		t.Fatalf("Shard hash returned 0")
 	}
 
-	nodeIdx := cache.DetermineNode(tenantID, appID, 5)
+	nodeIdx := cache.DetermineNode(orgID, appID, 5)
 	if nodeIdx < 0 || nodeIdx >= 5 {
 		t.Fatalf("DetermineNode returned invalid node index: %d", nodeIdx)
 	}
@@ -32,21 +32,21 @@ func TestShardsAndCache(t *testing.T) {
 	c := cache.NewMemoryCache()
 
 	app := &models.Application{
-		ID:       appID,
-		TenantID: tenantID,
-		Name:     "Fintech App",
+		ID:             appID,
+		OrganizationID: orgID,
+		Name:           "Fintech App",
 	}
 
-	c.SetApp(tenantID, appID, app, 1*time.Minute)
+	c.SetApp(orgID, appID, app, 1*time.Minute)
 
-	fetchedApp, found := c.GetApp(tenantID, appID)
+	fetchedApp, found := c.GetApp(orgID, appID)
 	if !found || fetchedApp.Name != "Fintech App" {
 		t.Fatalf("Cache lookup failed: %+v", fetchedApp)
 	}
 
 	// Test Cache Invalidation
-	c.InvalidateApp(tenantID, appID)
-	_, foundAfterInvalidate := c.GetApp(tenantID, appID)
+	c.InvalidateApp(orgID, appID)
+	_, foundAfterInvalidate := c.GetApp(orgID, appID)
 	if foundAfterInvalidate {
 		t.Fatalf("Expected app to be evicted from cache after invalidation")
 	}

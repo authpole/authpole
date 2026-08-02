@@ -24,8 +24,8 @@ func NewTokenValidator(c *cache.MemoryCache) *TokenValidator {
 }
 
 // ValidateToken performs high-performance JWT validation strictly using in-memory cached keys.
-func (v *TokenValidator) ValidateToken(tenantID, appID, tokenString string) (*models.AuthClaims, error) {
-	keys, found := v.cache.GetSigningKeys(tenantID, appID)
+func (v *TokenValidator) ValidateToken(orgID, appID, tokenString string) (*models.AuthClaims, error) {
+	keys, found := v.cache.GetSigningKeys(orgID, appID)
 	if !found || len(keys) == 0 {
 		return nil, crypto.ErrKeyNotFound
 	}
@@ -33,7 +33,7 @@ func (v *TokenValidator) ValidateToken(tenantID, appID, tokenString string) (*mo
 }
 
 // Middleware creates an HTTP middleware that extracts and validates the Bearer JWT token on incoming requests.
-func (v *TokenValidator) Middleware(tenantID, appID string) func(http.Handler) http.Handler {
+func (v *TokenValidator) Middleware(orgID, appID string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -43,7 +43,7 @@ func (v *TokenValidator) Middleware(tenantID, appID string) func(http.Handler) h
 			}
 
 			tokenString := strings.TrimPrefix(authHeader, "Bearer ")
-			claims, err := v.ValidateToken(tenantID, appID, tokenString)
+			claims, err := v.ValidateToken(orgID, appID, tokenString)
 			if err != nil {
 				http.Error(w, `{"error":"invalid_token","message":"`+err.Error()+`"}`, http.StatusUnauthorized)
 				return

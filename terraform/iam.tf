@@ -63,3 +63,15 @@ resource "aws_iam_instance_profile" "authpole_instance_profile" {
   name = "authpole-instance-profile-${var.environment}"
   role = aws_iam_role.authpole_instance_role.name
 }
+
+# Attach AWS-managed CloudWatch Agent policy (allows PutLogEvents, CreateLogStream, etc.)
+resource "aws_iam_role_policy_attachment" "authpole_cloudwatch_attach" {
+  role       = aws_iam_role.authpole_instance_role.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+# Attach SSM policy so we can run remote commands / Session Manager for debugging
+resource "aws_iam_role_policy_attachment" "authpole_ssm_attach" {
+  role       = aws_iam_role.authpole_instance_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}

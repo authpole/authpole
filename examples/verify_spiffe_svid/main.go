@@ -43,7 +43,7 @@ func main() {
 	bodyBytes, _ := json.Marshal(reqPayload)
 	req, _ := http.NewRequest(http.MethodPost, svidEndpoint, bytes.NewReader(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Tenant-ID", "default")
+	req.Header.Set("X-Organization-ID", "default")
 
 	// Fallback simulation if server isn't running locally yet
 	fmt.Printf("Step 1: Requesting short-lived SVID token from %s...\n", svidEndpoint)
@@ -62,20 +62,20 @@ func main() {
 		fmt.Println("⚡ Generating simulated JWT-SVID for demonstration...")
 		keyPair, _ := crypto.GenerateRSAKeyPair("default", "")
 		claims := &models.AuthClaims{
-			Subject:    spiffeID,
-			Issuer:     "https://authpole.io/tenants/default",
-			Audience:   "spiffe://authpole.local/ns/default",
-			TenantID:   "default",
-			WorkloadID: "payment_service",
-			SPIFFEID:   spiffeID,
-			Scope:      "read:transactions write:payments",
+			Subject:        spiffeID,
+			Issuer:         "https://authpole.io/organizations/default",
+			Audience:       "spiffe://authpole.local/ns/default",
+			OrganizationID: "default",
+			WorkloadID:     "payment_service",
+			SPIFFEID:       spiffeID,
+			Scope:          "read:transactions write:payments",
 		}
 		svidToken, _ = spiffe.IssueJWTSVID(claims, keyPair, 15)
 		fmt.Printf("✅ Issued SPIFFE SVID Token:\n %s...\n\n", svidToken[:30])
 	}
 
 	// 3. Authorizing Machine Refreshes SPIFFE Trust Bundle to Validate Incoming Machine Requests
-	bundleEndpoint := fmt.Sprintf("%s/.well-known/spiffe/bundle?tenant=default", authPoleURL)
+	bundleEndpoint := fmt.Sprintf("%s/.well-known/spiffe/bundle?organization=default", authPoleURL)
 	fmt.Printf("Step 2: Authorizing machine refreshing SPIFFE Trust Bundle from %s...\n", bundleEndpoint)
 
 	bundleResp, err := client.Get(bundleEndpoint)

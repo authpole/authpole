@@ -47,7 +47,8 @@ func (s *Server) routes() {
 	// OIDC Protocol Endpoints
 	s.mux.HandleFunc("/.well-known/openid-configuration", s.oidc.WellKnownConfig)
 	s.mux.HandleFunc("/.well-known/jwks.json", s.oidc.JWKS)
-	s.mux.HandleFunc("/tenants/", func(w http.ResponseWriter, r *http.Request) {
+
+	orgSubHandler := func(w http.ResponseWriter, r *http.Request) {
 		if len(r.URL.Path) >= 20 && r.URL.Path[len(r.URL.Path)-16:] == ".well-known/jwks.json" {
 			s.oidc.JWKS(w, r)
 			return
@@ -57,10 +58,13 @@ func (s *Server) routes() {
 			return
 		}
 		http.NotFound(w, r)
-	})
+	}
+	s.mux.HandleFunc("/organizations/", orgSubHandler)
+	s.mux.HandleFunc("/tenants/", orgSubHandler)
 
 	s.mux.HandleFunc("/oauth/v2/authorize", s.oidc.Authorize)
 	s.mux.HandleFunc("/oauth/v2/token", s.oidc.Token)
+	s.mux.HandleFunc("/oauth/v2/callback", s.oidc.Callback)
 	s.mux.HandleFunc("/oauth/v2/mock_login", s.oidc.MockLogin)
 
 	// Machine-to-Machine (M2M) & SPIFFE Provider Endpoints
@@ -73,9 +77,12 @@ func (s *Server) routes() {
 		if s.admin.EnableCORS(w, r) {
 			return
 		}
-		tenantID := r.Header.Get("X-Tenant-ID")
-		if tenantID == "" {
-			tenantID = "default"
+		orgID := r.Header.Get("X-Organization-ID")
+		if orgID == "" {
+			orgID = r.Header.Get("X-Tenant-ID")
+		}
+		if orgID == "" {
+			orgID = "default"
 		}
 		appID := r.Header.Get("X-App-ID")
 
@@ -90,7 +97,7 @@ func (s *Server) routes() {
 			tokenStr = authHeader[7:]
 		}
 
-		claims, err := s.validator.ValidateToken(tenantID, appID, tokenStr)
+		claims, err := s.validator.ValidateToken(orgID, appID, tokenStr)
 		if err != nil {
 			http.Error(w, `{"error":"invalid_token","message":"`+err.Error()+`"}`, http.StatusUnauthorized)
 			return
@@ -104,8 +111,11 @@ func (s *Server) routes() {
 	})
 
 	// Admin Console REST APIs (CAS Versioned)
-	s.mux.HandleFunc("/api/v1/tenants", s.admin.HandleTenants)
-	s.mux.HandleFunc("/api/v1/tenants/", s.admin.HandleTenants)
+	s.mux.HandleFunc("/api/v1/user/organizations", s.admin.HandleUserOrganizations)
+	s.mux.HandleFunc("/api/v1/organizations", s.admin.HandleOrganizations)
+	s.mux.HandleFunc("/api/v1/organizations/", s.admin.HandleOrganizations)
+	s.mux.HandleFunc("/api/v1/tenants", s.admin.HandleOrganizations)
+	s.mux.HandleFunc("/api/v1/tenants/", s.admin.HandleOrganizations)
 	s.mux.HandleFunc("/api/v1/apps", s.admin.HandleApps)
 	s.mux.HandleFunc("/api/v1/apps/", s.admin.HandleApps)
 	s.mux.HandleFunc("/api/v1/idps", s.admin.HandleIDPs)

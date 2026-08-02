@@ -73,11 +73,18 @@ resource "aws_lb" "authpole_alb" {
 
 # ALB Target Group
 resource "aws_lb_target_group" "authpole_tg" {
-  name        = "authpole-tg"
-  port        = 8080
-  protocol    = "HTTP"
-  vpc_id      = aws_vpc.authpole_vpc.id
-  target_type = "instance"
+  name                 = "authpole-tg"
+  port                 = 8080
+  protocol             = "HTTP"
+  vpc_id               = aws_vpc.authpole_vpc.id
+  target_type          = "instance"
+  deregistration_delay = 5
+
+  stickiness {
+    type            = "lb_cookie"
+    cookie_duration = 3600
+    enabled         = true
+  }
 
   health_check {
     path                = "/healthz"
@@ -128,7 +135,7 @@ resource "aws_lb_listener" "https_listener" {
 # Launch Template for Unikraft / Docker Compute Instance
 resource "aws_launch_template" "authpole_lt" {
   name_prefix   = "authpole-lt-"
-  image_id      = "ami-0c7217cdde317cfec" # Amazon Linux 2023 or custom Unikraft AMI
+  image_id      = "ami-08bc385c9fc5afc94" # Amazon Linux 2023 (al2023, x86_64, 2026-07-25)
   instance_type = var.instance_type
 
   iam_instance_profile {
@@ -140,41 +147,107 @@ resource "aws_launch_template" "authpole_lt" {
     security_groups             = [aws_security_group.server_sg.id]
   }
 
-  user_data = base64encode(<<-EOF
-              #!/bin/bash
-              exec > /var/log/user-data.log 2>&1
-              echo "Starting Authpole installation..."
-              yum update -y
-              yum install -y golang git
+  user_data = base64encode(<<EOF
+#!/bin/bash
+exec > /var/log/user-data.log 2>&1
+echo "=== Starting Authpole deployment on $(date) ==="
 
-              mkdir -p /opt/authpole
-              cd /opt/authpole
-              git clone https://github.com/authpole/authpole.git .
-              go build -o authpole ./cmd/server
+# aws-cli and SSM agent are pre-installed on Amazon Linux 2023
+echo "Downloading binary from S3..."
+aws s3 cp s3://${aws_s3_bucket.authpole_storage.id}/bin/authpole-linux \
+  /usr/local/bin/authpole --region ${var.aws_region}
+if [ $? -ne 0 ]; then
+  echo "ERROR: Failed to download binary from S3"
+  exit 1
+fi
+chmod +x /usr/local/bin/authpole
+echo "Binary ready: $(ls -lh /usr/local/bin/authpole)"
 
-              cat <<'SERVICE' > /etc/systemd/system/authpole.service
-              [Unit]
-              Description=Authpole Mediator Proxy IDP Server
-              After=network.target
+echo "Fetching global OAuth credentials from SSM Parameter Store..."
+GOOGLE_CLIENT_ID=$(aws ssm get-parameter --name "/authpole/production/google_client_id" --query "Parameter.Value" --output text --region ${var.aws_region} 2>/dev/null || echo "")
+GOOGLE_CLIENT_SECRET=$(aws ssm get-parameter --name "/authpole/production/google_client_secret" --with-decryption --query "Parameter.Value" --output text --region ${var.aws_region} 2>/dev/null || echo "")
+GITHUB_CLIENT_ID=$(aws ssm get-parameter --name "/authpole/production/github_client_id" --query "Parameter.Value" --output text --region ${var.aws_region} 2>/dev/null || echo "")
+GITHUB_CLIENT_SECRET=$(aws ssm get-parameter --name "/authpole/production/github_client_secret" --with-decryption --query "Parameter.Value" --output text --region ${var.aws_region} 2>/dev/null || echo "")
 
-              [Service]
-              Type=simple
-              User=root
-              WorkingDirectory=/opt/authpole
-              ExecStart=/opt/authpole/authpole -port=8080 -s3-bucket=${aws_s3_bucket.authpole_storage.id}
-              Restart=always
-              RestartSec=5
-              Environment=AWS_REGION=${var.aws_region}
-              Environment=S3_BUCKET=${aws_s3_bucket.authpole_storage.id}
+cat > /etc/systemd/system/authpole.service << SERVICE
+[Unit]
+Description=Authpole Mediator Proxy IDP Server
+After=network.target
 
-              [Install]
-              WantedBy=multi-user.target
-              SERVICE
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/authpole -port=8080 -s3-bucket=${aws_s3_bucket.authpole_storage.id}
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=5s
+Environment=AWS_REGION=${var.aws_region}
+Environment=S3_BUCKET=${aws_s3_bucket.authpole_storage.id}
+Environment=AUTHPOLE_GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID
+Environment=AUTHPOLE_GOOGLE_CLIENT_SECRET=$GOOGLE_CLIENT_SECRET
+Environment=AUTHPOLE_GITHUB_CLIENT_ID=$GITHUB_CLIENT_ID
+Environment=AUTHPOLE_GITHUB_CLIENT_SECRET=$GITHUB_CLIENT_SECRET
+StandardOutput=append:/var/log/authpole.log
+StandardError=append:/var/log/authpole.log
 
-              systemctl daemon-reload
-              systemctl enable --now authpole
-              echo "Authpole service started successfully!"
-              EOF
+[Install]
+WantedBy=multi-user.target
+SERVICE
+
+systemctl daemon-reload
+systemctl enable authpole
+systemctl start authpole
+sleep 3
+systemctl status authpole --no-pager
+echo "=== authpole service started ==="
+
+dnf install -y amazon-cloudwatch-agent 2>&1 || \
+  rpm -Uvh https://s3.amazonaws.com/amazoncloudwatch-agent/amazon_linux/amd64/latest/amazon-cloudwatch-agent.rpm 2>&1
+mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
+
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << CWCONFIG
+{
+  "agent": {
+    "run_as_user": "root",
+    "force_flush_interval": 15
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/authpole.log",
+            "log_group_name": "/authpole/${var.environment}/server",
+            "log_stream_name": "{instance_id}",
+            "retention_in_days": 30,
+            "timestamp_format": "%Y/%m/%d %H:%M:%S"
+          },
+          {
+            "file_path": "/var/log/user-data.log",
+            "log_group_name": "/authpole/${var.environment}/user-data",
+            "log_stream_name": "{instance_id}",
+            "retention_in_days": 7
+          }
+        ]
+      }
+    },
+    "log_stream_name": "{instance_id}",
+    "force_flush_interval": 15
+  }
+}
+CWCONFIG
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config \
+  -m ec2 \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json \
+  -s
+echo "CloudWatch agent status: $?"
+
+echo "=== Deployment complete on $(date) ==="
+EOF
   )
 
   tag_specifications {
@@ -197,5 +270,14 @@ resource "aws_autoscaling_group" "authpole_asg" {
   launch_template {
     id      = aws_launch_template.authpole_lt.id
     version = "$Latest"
+  }
+
+  instance_refresh {
+    strategy = "Rolling"
+    preferences {
+      min_healthy_percentage = 50
+      instance_warmup        = 15
+    }
+    triggers = ["tag", "launch_template"]
   }
 }
