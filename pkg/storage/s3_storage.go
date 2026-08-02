@@ -5,59 +5,72 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
-	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"authpole/pkg/models"
 )
 
-// S3CASStorage provides a production S3 client implementation using standard HTTP REST / AWS S3 protocol calls.
-// It leverages S3 Object ETags and VersionIDs for Compare-And-Swap (CAS) validation.
+// S3CASStorage provides a production S3 client using AWS SDK v2 with SigV4 signing.
+// On EC2 it automatically picks up credentials from the instance IAM role via IMDS.
+// When endpoint is non-empty (e.g. MinIO for local dev) it uses path-style addressing.
 type S3CASStorage struct {
 	bucketName string
-	region     string
-	endpoint   string
-	httpClient *http.Client
+	client     *s3.Client
 }
 
-// NewS3CASStorage creates a new S3 CAS storage backend instance.
+// NewS3CASStorage creates a new S3 CAS storage backend.
+// region: AWS region (e.g. "us-east-1")
+// endpoint: optional override for local dev (e.g. "http://localhost:9000"); empty = real AWS S3
 func NewS3CASStorage(bucketName, region, endpoint string) *S3CASStorage {
+	cfg, err := config.LoadDefaultConfig(context.Background(),
+		config.WithRegion(region),
+	)
+	if err != nil {
+		panic(fmt.Sprintf("failed to load AWS config: %v", err))
+	}
+
+	opts := []func(*s3.Options){}
+	if endpoint != "" {
+		// Local dev: MinIO or other S3-compatible store — use path-style
+		opts = append(opts, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(endpoint)
+			o.UsePathStyle = true
+		})
+	}
+
 	return &S3CASStorage{
 		bucketName: bucketName,
-		region:     region,
-		endpoint:   endpoint,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		client:     s3.NewFromConfig(cfg, opts...),
 	}
 }
 
 func (s *S3CASStorage) Get(ctx context.Context, key string) (*models.StoredRecord, error) {
-	url := fmt.Sprintf("%s/%s/%s", s.endpoint, s.bucketName, key)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(key),
+	})
 	if err != nil {
-		return nil, err
+		if isS3NotFound(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("s3 get %q: %w", key, err)
 	}
+	defer out.Body.Close()
 
-	resp, err := s.httpClient.Do(req)
+	data, err := io.ReadAll(out.Body)
 	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, ErrNotFound
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("s3 get failed with status %d", resp.StatusCode)
+		return nil, fmt.Errorf("s3 read body %q: %w", key, err)
 	}
 
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	version := resp.Header.Get("ETag")
-	if version == "" {
-		version = resp.Header.Get("x-amz-version-id")
+	version := ""
+	if out.ETag != nil {
+		version = *out.ETag
+	} else if out.VersionId != nil {
+		version = *out.VersionId
 	}
 
 	return &models.StoredRecord{
@@ -68,65 +81,104 @@ func (s *S3CASStorage) Get(ctx context.Context, key string) (*models.StoredRecor
 }
 
 func (s *S3CASStorage) Put(ctx context.Context, key string, data []byte, expectedVersion string) (string, error) {
-	url := fmt.Sprintf("%s/%s/%s", s.endpoint, s.bucketName, key)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(data))
-	if err != nil {
-		return "", err
+	input := &s3.PutObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader(data),
 	}
-
 	if expectedVersion != "" {
-		req.Header.Set("If-Match", expectedVersion)
+		input.IfMatch = aws.String(expectedVersion)
 	}
 
-	resp, err := s.httpClient.Do(req)
+	out, err := s.client.PutObject(ctx, input)
 	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusPreconditionFailed {
-		return "", ErrVersionMismatch
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", fmt.Errorf("s3 put failed with status %d", resp.StatusCode)
+		if isS3PreconditionFailed(err) {
+			return "", ErrVersionMismatch
+		}
+		return "", fmt.Errorf("s3 put %q: %w", key, err)
 	}
 
-	newVersion := resp.Header.Get("ETag")
-	if newVersion == "" {
-		newVersion = resp.Header.Get("x-amz-version-id")
+	newVersion := ""
+	if out.ETag != nil {
+		newVersion = *out.ETag
+	} else if out.VersionId != nil {
+		newVersion = *out.VersionId
 	}
-
 	return newVersion, nil
 }
 
 func (s *S3CASStorage) Delete(ctx context.Context, key string, expectedVersion string) error {
-	url := fmt.Sprintf("%s/%s/%s", s.endpoint, s.bucketName, key)
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
-	if err != nil {
-		return err
+	input := &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(key),
 	}
-
 	if expectedVersion != "" {
-		req.Header.Set("If-Match", expectedVersion)
+		input.IfMatch = aws.String(expectedVersion)
 	}
 
-	resp, err := s.httpClient.Do(req)
+	_, err := s.client.DeleteObject(ctx, input)
 	if err != nil {
-		return err
+		if isS3PreconditionFailed(err) {
+			return ErrVersionMismatch
+		}
+		return fmt.Errorf("s3 delete %q: %w", key, err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusPreconditionFailed {
-		return ErrVersionMismatch
-	}
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("s3 delete failed with status %d", resp.StatusCode)
-	}
-
 	return nil
 }
 
 func (s *S3CASStorage) List(ctx context.Context, prefix string) ([]*models.StoredRecord, error) {
-	// In production, standard S3 ListObjectsV2 call would be issued.
-	return nil, fmt.Errorf("list method requires s3 bucket list permission")
+	out, err := s.client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucketName),
+		Prefix: aws.String(prefix),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("s3 list %q: %w", prefix, err)
+	}
+
+	var records []*models.StoredRecord
+	for _, obj := range out.Contents {
+		if obj.Key == nil {
+			continue
+		}
+		rec, err := s.Get(ctx, *obj.Key)
+		if err != nil {
+			continue // skip unreadable objects rather than aborting
+		}
+		records = append(records, rec)
+	}
+	return records, nil
+}
+
+// isS3NotFound returns true for 404 / NoSuchKey errors.
+func isS3NotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch err.(type) {
+	case *types.NoSuchKey:
+		return true
+	}
+	// Fallback: check error string (covers 404 from non-versioned buckets)
+	return containsAny(err.Error(), "NoSuchKey", "404", "NotFound")
+}
+
+// isS3PreconditionFailed returns true for 412 Precondition Failed (ETag mismatch).
+func isS3PreconditionFailed(err error) bool {
+	if err == nil {
+		return false
+	}
+	return containsAny(err.Error(), "PreconditionFailed", "412")
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if len(s) >= len(sub) {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

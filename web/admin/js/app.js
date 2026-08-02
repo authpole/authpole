@@ -1,19 +1,14 @@
 document.addEventListener('DOMContentLoaded', () => {
   const apiHostInput = document.getElementById('apiHostInput');
-  const adminTokenInput = document.getElementById('adminTokenInput');
-  const tenantSelect = document.getElementById('tenantSelect');
+  const organizationSelect = document.getElementById('organizationSelect');
   const statusDot = document.getElementById('statusDot');
   const statusText = document.getElementById('statusText');
-
-  // Restore saved token from localStorage
-  if (localStorage.getItem('authpole_admin_token')) {
-    adminTokenInput.value = localStorage.getItem('authpole_admin_token');
-  }
 
   const pageTitle = document.getElementById('pageTitle');
   const pageDescription = document.getElementById('pageDescription');
   const refreshBtn = document.getElementById('refreshBtn');
   const createBtn = document.getElementById('createBtn');
+  const inviteUserBtn = document.getElementById('inviteUserBtn');
 
   const modalOverlay = document.getElementById('modalOverlay');
   const modalTitle = document.getElementById('modalTitle');
@@ -25,89 +20,95 @@ document.addEventListener('DOMContentLoaded', () => {
   const casConflictOverlay = document.getElementById('casConflictOverlay');
   const casConflictRefreshBtn = document.getElementById('casConflictRefreshBtn');
 
-  let currentTab = 'tenants';
-  let currentSubTab = 'rbac-users';
-  let editingRecord = null;
+  const loginScreenOverlay = document.getElementById('loginScreenOverlay');
+  const loginGoogleBtn = document.getElementById('loginGoogleBtn');
+  const loginGithubBtn = document.getElementById('loginGithubBtn');
 
-  // Initialize API client with Admin Token and CAS conflict handler
-  const api = new AuthPoleAPI(
-    () => apiHostInput.value,
-    () => tenantSelect.value,
-    () => adminTokenInput.value,
-    () => showCASConflictModal()
-  );
-
-  adminTokenInput.addEventListener('change', () => {
-    localStorage.setItem('authpole_admin_token', adminTokenInput.value);
-    loadCurrentTabData();
-  });
-
-  // OIDC User Profile & Auth Integration
-  const oidcSignInBtn = document.getElementById('oidcSignInBtn');
-  const oidcSignOutBtn = document.getElementById('oidcSignOutBtn');
-  const unauthProfileView = document.getElementById('unauthProfileView');
   const authProfileView = document.getElementById('authProfileView');
+  const oidcSignOutBtn = document.getElementById('oidcSignOutBtn');
   const adminUserName = document.getElementById('adminUserName');
   const adminUserEmail = document.getElementById('adminUserEmail');
 
-  function renderUserProfile() {
+  let currentTab = 'organizations';
+  let currentSubTab = 'rbac-users';
+  let editingRecord = null;
+
+  // Initialize API client with Token, CAS conflict handler, and Unauthorized Handler
+  const api = new AuthPoleAPI(
+    () => apiHostInput.value,
+    () => organizationSelect.value,
+    () => localStorage.getItem('authpole_admin_token') || '',
+    () => showCASConflictModal(),
+    () => requireAuthentication()
+  );
+
+  function getAuthenticatedUserProfile() {
     const token = localStorage.getItem('authpole_admin_token');
     const idToken = localStorage.getItem('authpole_id_token') || token;
-
-    if (!token) {
-      unauthProfileView.classList.remove('hidden');
-      authProfileView.classList.add('hidden');
-      return;
-    }
+    if (!token) return null;
 
     try {
-      // Decode JWT payload
       const parts = idToken.split('.');
       if (parts.length === 3) {
         const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
-        adminUserName.textContent = payload.name || payload.preferred_username || payload.sub || 'Admin User';
-        adminUserEmail.textContent = payload.email || `${payload.sub}@authpole.io`;
-        
-        unauthProfileView.classList.add('hidden');
-        authProfileView.classList.remove('hidden');
-        return;
+        return {
+          name: payload.name || payload.preferred_username || payload.sub || 'Admin User',
+          email: payload.email || `${payload.sub}@authpole.io`,
+          sub: payload.sub
+        };
       }
     } catch (_) {}
 
-    // Fallback if static secret token used
-    if (token) {
-      adminUserName.textContent = 'Static Admin';
-      adminUserEmail.textContent = 'admin@authpole.io';
-      unauthProfileView.classList.add('hidden');
-      authProfileView.classList.remove('hidden');
-    }
+    return null;
   }
 
-  oidcSignInBtn.addEventListener('click', () => {
+  function requireAuthentication() {
+    const profile = getAuthenticatedUserProfile();
+    if (!profile) {
+      if (authProfileView) authProfileView.classList.add('hidden');
+      if (loginScreenOverlay) loginScreenOverlay.classList.remove('hidden');
+      return false;
+    }
+
+    if (adminUserName) adminUserName.textContent = profile.name;
+    if (adminUserEmail) adminUserEmail.textContent = profile.email;
+    if (authProfileView) authProfileView.classList.remove('hidden');
+    if (loginScreenOverlay) loginScreenOverlay.classList.add('hidden');
+    return true;
+  }
+
+  function triggerOAuthLogin(idpHint = '') {
     const apiHost = apiHostInput.value.replace(/\/$/, '');
     localStorage.setItem('authpole_api_host', apiHost);
 
     const redirectURI = `${window.location.origin}/callback.html`;
-    const authURL = `${apiHost}/oauth/v2/authorize?tenant=${tenantSelect.value}&client_id=admin_console&redirect_uri=${encodeURIComponent(redirectURI)}&response_type=code&scope=openid profile email`;
+    let authURL = `${apiHost}/oauth/v2/authorize?organization=${organizationSelect.value || 'default'}&client_id=admin_console&redirect_uri=${encodeURIComponent(redirectURI)}&response_type=code&scope=openid profile email`;
+    if (idpHint) {
+      authURL += `&idp=${encodeURIComponent(idpHint)}&idp_hint=${encodeURIComponent(idpHint)}`;
+    }
     window.location.href = authURL;
-  });
+  }
 
-  oidcSignOutBtn.addEventListener('click', () => {
-    localStorage.removeItem('authpole_admin_token');
-    localStorage.removeItem('authpole_id_token');
-    renderUserProfile();
-    loadCurrentTabData();
-  });
+  if (loginGoogleBtn) loginGoogleBtn.addEventListener('click', () => triggerOAuthLogin('google'));
+  if (loginGithubBtn) loginGithubBtn.addEventListener('click', () => triggerOAuthLogin('github'));
 
-  renderUserProfile();
+  if (oidcSignOutBtn) {
+    oidcSignOutBtn.addEventListener('click', () => {
+      localStorage.removeItem('authpole_admin_token');
+      localStorage.removeItem('authpole_id_token');
+      requireAuthentication();
+    });
+  }
+
+  requireAuthentication();
 
   // Tab Definitions & Subtitles
   const tabInfo = {
-    tenants: { title: 'Tenants', desc: 'Multi-tenant isolation management and domain configuration.' },
+    organizations: { title: 'Organizations', desc: 'Multi-tenant organization units, domain settings, and initial admin user provision.' },
     apps: { title: 'Applications (Service Providers)', desc: 'Configure registered relying party applications, OAuth credentials, and redirect URIs.' },
     idps: { title: 'Upstream Identity Providers', desc: 'Manage federated IDP integrations (OIDC, OAuth2, SAML, Mock).' },
     keys: { title: 'Signing Keys & JWKS', desc: 'Manage RSA/EdDSA asymmetric key pairs and public JWKS download.' },
-    rbac: { title: 'Users, Teams & Roles', desc: 'Console administration RBAC and permission assignments.' },
+    rbac: { title: 'Users, Teams & Roles', desc: 'Console administration RBAC, user invitations, and permission assignments.' },
     workloads: { title: 'M2M & SPIFFE Workload Identities', desc: 'Register machine workloads, bind long-expiry SPIFFE cert fingerprints, and download trust bundles.' },
     simulator: { title: 'Auth Flow & Token Lab', desc: 'Test proxy authentication login flow and access path token validation.' }
   };
@@ -141,7 +142,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
   refreshBtn.addEventListener('click', () => loadCurrentTabData());
   createBtn.addEventListener('click', () => openCreateModal());
-  tenantSelect.addEventListener('change', () => loadCurrentTabData());
+  if (inviteUserBtn) {
+    inviteUserBtn.addEventListener('click', () => openInviteModal());
+  }
+  organizationSelect.addEventListener('change', () => {
+    if (organizationSelect.value === '__create_new__') {
+      openEditModal('organization', null);
+      return;
+    }
+    loadCurrentTabData();
+  });
   apiHostInput.addEventListener('change', () => checkHealth());
 
   modalCloseBtn.addEventListener('click', closeModal);
@@ -157,10 +167,11 @@ document.addEventListener('DOMContentLoaded', () => {
   function switchTab(tab) {
     currentTab = tab;
     document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('active'));
-    document.getElementById(`tab-${tab}`).classList.add('active');
+    const pane = document.getElementById(`tab-${tab}`) || document.getElementById('tab-organizations');
+    if (pane) pane.classList.add('active');
 
-    pageTitle.textContent = tabInfo[tab].title;
-    pageDescription.textContent = tabInfo[tab].desc;
+    pageTitle.textContent = tabInfo[tab] ? tabInfo[tab].title : 'Organizations';
+    pageDescription.textContent = tabInfo[tab] ? tabInfo[tab].desc : '';
 
     createBtn.style.display = (tab === 'keys' || tab === 'simulator') ? 'none' : 'inline-flex';
 
@@ -182,49 +193,78 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  async function loadTenantsList() {
+  let userHasSeenOnboarding = false;
+
+  async function loadOrganizationsList() {
     try {
-      const { data } = await api.getTenants();
-      const tenants = data || [];
+      let orgs = [];
+      const userProfile = getAuthenticatedUserProfile();
+      
+      // Try fetching user specific organizations if logged in
+      if (userProfile && userProfile.sub !== 'static_admin') {
+        try {
+          const { data: uOrgs } = await api.getUserOrganizations();
+          orgs = uOrgs || [];
+        } catch (_) {
+          const { data } = await api.getOrganizations();
+          orgs = data || [];
+        }
+      } else {
+        const { data } = await api.getOrganizations();
+        orgs = data || [];
+      }
 
-      // Update tenant selector options
-      const currentSelected = tenantSelect.value;
-      tenantSelect.innerHTML = '';
-      tenants.forEach(t => {
+      // Check if logged-in user belongs to 0 organizations
+      if (userProfile && orgs.length === 0 && !userHasSeenOnboarding) {
+        userHasSeenOnboarding = true;
+        openEditModal('organization', null);
+      }
+
+      const currentSelected = organizationSelect.value;
+      organizationSelect.innerHTML = '';
+      orgs.forEach(o => {
         const opt = document.createElement('option');
-        opt.value = t.id;
-        opt.textContent = `${t.id} (${t.name})`;
-        if (t.id === currentSelected) opt.selected = true;
-        tenantSelect.appendChild(opt);
+        opt.value = o.id;
+        opt.textContent = `${o.id} (${o.name})`;
+        if (o.id === currentSelected) opt.selected = true;
+        organizationSelect.appendChild(opt);
       });
 
-      const grid = document.getElementById('tenantsGrid');
-      grid.innerHTML = tenants.map(t => `
-        <div class="card">
-          <div class="section-header">
-            <h3>${t.name}</h3>
+      const createOpt = document.createElement('option');
+      createOpt.value = '__create_new__';
+      createOpt.textContent = '➕ Create New Organization...';
+      organizationSelect.appendChild(createOpt);
+
+      const grid = document.getElementById('organizationsGrid');
+      if (grid) {
+        grid.innerHTML = orgs.map(o => `
+          <div class="card">
+            <div class="section-header">
+              <h3>${o.name}</h3>
+            </div>
+            <p class="subtitle">Domain: <span class="code-inline">${o.domain || 'N/A'}</span></p>
+            <p class="subtitle">Organization ID: <span class="code-inline">${o.id}</span></p>
+            <button class="btn btn-secondary btn-block edit-org-btn" data-id="${o.id}">Edit Organization</button>
           </div>
-          <p class="subtitle">Domain: <span class="code-inline">${t.domain || 'N/A'}</span></p>
-          <p class="subtitle">Tenant ID: <span class="code-inline">${t.id}</span></p>
-          <button class="btn btn-secondary btn-block edit-tenant-btn" data-id="${t.id}">Edit Tenant</button>
-        </div>
-      `).join('');
+        `).join('');
 
-      document.querySelectorAll('.edit-tenant-btn').forEach(btn => {
-        btn.addEventListener('click', async () => {
-          const { data: tenant } = await api.getTenant(btn.dataset.id);
-          openEditModal('tenant', tenant);
+        document.querySelectorAll('.edit-org-btn').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const { data: org } = await api.getOrganization(btn.dataset.id);
+            openEditModal('organization', org);
+          });
         });
-      });
+      }
     } catch (err) {
-      console.error('Failed to load tenants:', err);
+      console.error('Failed to load organizations:', err);
     }
   }
 
   async function loadCurrentTabData() {
+    if (!requireAuthentication()) return;
     checkHealth();
-    if (currentTab === 'tenants') {
-      await loadTenantsList();
+    if (currentTab === 'organizations' || currentTab === 'tenants') {
+      await loadOrganizationsList();
     } else if (currentTab === 'apps') {
       await loadApps();
     } else if (currentTab === 'idps') {
@@ -310,7 +350,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <tr>
           <td><span class="code-inline">${k.kid}</span></td>
           <td><span class="card-badge badge-cyan">${k.algorithm}</span></td>
-          <td>${k.app_id || 'Global Tenant Key'}</td>
+          <td>${k.app_id || 'Global Key'}</td>
           <td><span class="card-badge ${k.active ? 'badge-emerald' : 'badge-amber'}">${k.active ? 'ACTIVE' : 'INACTIVE'}</span></td>
           <td>${new Date(k.created_at).toLocaleString()}</td>
         </tr>
@@ -358,7 +398,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const blob = new Blob([content], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `jwks_${tenantSelect.value}.json`;
+    a.download = `jwks_${organizationSelect.value}.json`;
     a.click();
   });
 
@@ -368,7 +408,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const blob = new Blob([content], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `spiffe_bundle_${tenantSelect.value}.json`;
+    a.download = `spiffe_bundle_${organizationSelect.value}.json`;
     a.click();
   });
 
@@ -384,18 +424,25 @@ document.addEventListener('DOMContentLoaded', () => {
   async function loadRBAC() {
     try {
       const { data: users } = await api.getUsers();
-      document.getElementById('usersTableBody').innerHTML = (users || []).map(u => `
+      document.getElementById('usersTableBody').innerHTML = (users || []).map(u => {
+        let statusBadge = `<span class="card-badge badge-emerald">Active</span>`;
+        if (u.status === 'invited') {
+          statusBadge = `<span class="card-badge badge-amber">Invited</span>`;
+        } else if (!u.active) {
+          statusBadge = `<span class="card-badge badge-amber">Disabled</span>`;
+        }
+        return `
         <tr>
           <td><strong>${u.name}</strong></td>
           <td>${u.email}</td>
           <td>${(u.role_ids || []).map(r => `<span class="card-badge badge-cyan">${r}</span>`).join(' ')}</td>
           <td>${(u.team_ids || []).map(t => `<span class="card-badge badge-emerald">${t}</span>`).join(' ')}</td>
-          <td><span class="card-badge ${u.active ? 'badge-emerald' : 'badge-amber'}">${u.active ? 'Active' : 'Disabled'}</span></td>
+          <td>${statusBadge}</td>
           <td>
             <button class="btn btn-secondary edit-user-btn" data-user='${JSON.stringify(u)}'>Edit User</button>
           </td>
         </tr>
-      `).join('');
+      `}).join('');
 
       document.querySelectorAll('.edit-user-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -447,7 +494,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const clientID = document.getElementById('simClientID').value;
       const redirectURI = document.getElementById('simRedirectURI').value;
       const scope = document.getElementById('simScope').value;
-      const authURL = `${apiHostInput.value.replace(/\/$/, '')}/oauth/v2/authorize?tenant=${tenantSelect.value}&client_id=${clientID}&redirect_uri=${encodeURIComponent(redirectURI)}&scope=${encodeURIComponent(scope)}`;
+      const authURL = `${apiHostInput.value.replace(/\/$/, '')}/oauth/v2/authorize?organization=${organizationSelect.value}&client_id=${clientID}&redirect_uri=${encodeURIComponent(redirectURI)}&scope=${encodeURIComponent(scope)}`;
       window.open(authURL, '_blank');
     };
 
@@ -470,24 +517,73 @@ document.addEventListener('DOMContentLoaded', () => {
     };
   }
 
+  async function openInviteModal() {
+    editingRecord = { type: 'invite_user', record: null };
+    modalTitle.textContent = '📧 Invite User to Organization';
+    const { data: availableRoles } = await api.getRoles();
+    const rolesHTML = (availableRoles || []).map(r => `
+      <label class="checkbox-label">
+        <input type="checkbox" name="mUserRoles" value="${r.id}" />
+        <span><strong>${r.name}</strong> <span class="code-inline" style="font-size:0.75rem">${r.id}</span></span>
+      </label>
+    `).join('') || '<div style="font-size:0.8rem; color:var(--text-muted);">No roles available.</div>';
+
+    modalBody.innerHTML = `
+      <div class="form-group">
+        <label>Email Address *</label>
+        <input type="email" id="mEmail" placeholder="colleague@example.com" required />
+      </div>
+      <div class="form-group">
+        <label>Full Name</label>
+        <input type="text" id="mName" placeholder="Jane Smith" />
+      </div>
+      <div class="form-group">
+        <label>Assign Roles</label>
+        <div class="select-list-box">${rolesHTML}</div>
+      </div>
+    `;
+    modalOverlay.classList.remove('hidden');
+  }
+
   async function openEditModal(type, record) {
     editingRecord = { type, record };
-    modalTitle.textContent = `Edit ${type.toUpperCase()} Settings`;
+    const typeLabelMap = { organization: 'Organization', app: 'Application', idp: 'Identity Provider', workload: 'Workload', user: 'User', team: 'Team', role: 'Role', tenant: 'Organization' };
+    const typeLabel = typeLabelMap[type] || type;
+    modalTitle.textContent = record ? `Edit ${typeLabel} Settings` : `Create New ${typeLabel}`;
 
-    if (type === 'tenant') {
-      modalBody.innerHTML = `
+    if (type === 'organization' || type === 'tenant') {
+      const profile = getAuthenticatedUserProfile();
+      const defaultName = (!record && profile) ? profile.name : '';
+      const defaultEmail = (!record && profile) ? profile.email : '';
+
+      const initialUserFields = !record ? `
+        <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 1.2rem 0;" />
+        <h4 style="margin-bottom: 0.3rem; color: var(--text-color);">Initial Admin User (Logged In Account)</h4>
+        <p class="subtitle" style="margin-bottom: 0.8rem;">You will automatically be provisioned as the Super Administrator of this new organization.</p>
         <div class="form-group">
-          <label>Tenant ID</label>
-          <input type="text" id="mID" value="${record?.id || ''}" ${record ? 'readonly' : ''} />
+          <label>Admin Name</label>
+          <input type="text" id="mInitUserName" value="${defaultName}" placeholder="Org Admin Name" />
         </div>
         <div class="form-group">
-          <label>Tenant Name</label>
-          <input type="text" id="mName" value="${record?.name || ''}" />
+          <label>Admin Email</label>
+          <input type="email" id="mInitUserEmail" value="${defaultEmail}" placeholder="admin@orgdomain.com" />
+        </div>
+      ` : '';
+
+      modalBody.innerHTML = `
+        <div class="form-group">
+          <label>Organization ID</label>
+          <input type="text" id="mID" value="${record?.id || ''}" ${record ? 'readonly' : ''} placeholder="org_acme" />
+        </div>
+        <div class="form-group">
+          <label>Organization Name</label>
+          <input type="text" id="mName" value="${record?.name || ''}" placeholder="Acme Corporation" />
         </div>
         <div class="form-group">
           <label>Primary Domain</label>
-          <input type="text" id="mDomain" value="${record?.domain || ''}" />
+          <input type="text" id="mDomain" value="${record?.domain || ''}" placeholder="acme.com" />
         </div>
+        ${initialUserFields}
       `;
     } else if (type === 'app') {
       modalBody.innerHTML = `
@@ -509,28 +605,48 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
       `;
     } else if (type === 'idp') {
+      const isNew = !record;
       modalBody.innerHTML = `
         <div class="form-group">
-          <label>IDP ID</label>
-          <input type="text" id="mID" value="${record?.id || ''}" ${record ? 'readonly' : ''} />
-        </div>
-        <div class="form-group">
-          <label>IDP Name</label>
-          <input type="text" id="mName" value="${record?.name || ''}" />
-        </div>
-        <div class="form-group">
-          <label>Protocol Type</label>
+          <label>Provider</label>
           <select id="mType">
-            <option value="mock" ${record?.type === 'mock' ? 'selected' : ''}>mock (Developer Testing)</option>
-            <option value="oidc" ${record?.type === 'oidc' ? 'selected' : ''}>oidc (Standard OpenID Connect)</option>
-            <option value="oauth2" ${record?.type === 'oauth2' ? 'selected' : ''}>oauth2 (Generic OAuth 2.0)</option>
+            <option value="google" ${(record?.id === 'google' || record?.type === 'oidc') ? 'selected' : ''}>Google (OIDC)</option>
+            <option value="github" ${(record?.id === 'github' || record?.type === 'oauth2') ? 'selected' : ''}>GitHub (OAuth2)</option>
+            <option value="mock" ${record?.type === 'mock' ? 'selected' : ''}>Mock (Developer Testing)</option>
           </select>
+        </div>
+        ${!isNew ? `<div class="form-group"><label>IDP ID</label><input type="text" id="mID" value="${record?.id || ''}" readonly /></div>` : ''}
+        <div class="form-group">
+          <label>Display Name</label>
+          <input type="text" id="mName" value="${record?.name || ''}" placeholder="e.g. Google Workspace" />
         </div>
         <div class="form-group">
           <label>Client ID</label>
-          <input type="text" id="mClientID" value="${record?.client_id || ''}" />
+          <input type="text" id="mClientID" value="${record?.client_id || ''}" placeholder="OAuth Client ID" />
+        </div>
+        <div class="form-group">
+          <label>Client Secret</label>
+          <input type="password" id="mClientSecret" value="${record?.client_secret || ''}" placeholder="OAuth Client Secret (leave blank to keep existing)" />
         </div>
       `;
+      // Auto-sync the hidden ID for new records based on selected provider
+      if (isNew) {
+        document.getElementById('mType').addEventListener('change', (e) => {
+          const sel = e.target.value;
+          const nameInput = document.getElementById('mName');
+          if (sel === 'google' && !nameInput.value) nameInput.value = 'Google';
+          else if (sel === 'github' && !nameInput.value) nameInput.value = 'GitHub';
+          else if (sel === 'mock' && !nameInput.value) nameInput.value = 'Mock IDP';
+        });
+        // Set defaults for name on open
+        const initialSel = document.getElementById('mType').value;
+        const nameInput = document.getElementById('mName');
+        if (!nameInput.value) {
+          if (initialSel === 'google') nameInput.value = 'Google';
+          else if (initialSel === 'github') nameInput.value = 'GitHub';
+          else if (initialSel === 'mock') nameInput.value = 'Mock IDP';
+        }
+      }
     } else if (type === 'workload') {
       modalBody.innerHTML = `
         <div class="form-group">
@@ -641,7 +757,7 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
         <div class="form-group">
           <label>Permissions (comma separated)</label>
-          <input type="text" id="mPermissions" value="${(record?.permissions || []).join(', ')}" placeholder="tenants:write, apps:write, keys:write" />
+          <input type="text" id="mPermissions" value="${(record?.permissions || []).join(', ')}" placeholder="organizations:write, apps:write, keys:write" />
         </div>
       `;
     }
@@ -650,7 +766,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function openCreateModal() {
-    if (currentTab === 'tenants') openEditModal('tenant', null);
+    if (currentTab === 'organizations' || currentTab === 'tenants') openEditModal('organization', null);
     else if (currentTab === 'apps') openEditModal('app', null);
     else if (currentTab === 'idps') openEditModal('idp', null);
     else if (currentTab === 'workloads') openEditModal('workload', null);
@@ -676,14 +792,31 @@ document.addEventListener('DOMContentLoaded', () => {
     const expectedVersion = record ? record.version : '';
 
     try {
-      if (type === 'tenant') {
-        const tenantData = {
+      if (type === 'organization' || type === 'tenant') {
+        const orgData = {
           id: document.getElementById('mID').value.trim(),
           name: document.getElementById('mName').value.trim(),
           domain: document.getElementById('mDomain').value.trim(),
           version: expectedVersion
         };
-        await api.saveTenant(tenantData, expectedVersion);
+        const initNameElem = document.getElementById('mInitUserName');
+        const initEmailElem = document.getElementById('mInitUserEmail');
+        if (initEmailElem && initEmailElem.value.trim()) {
+          orgData.initial_user = {
+            name: initNameElem ? initNameElem.value.trim() : '',
+            email: initEmailElem.value.trim()
+          };
+        }
+        await api.saveOrganization(orgData, expectedVersion);
+      } else if (type === 'invite_user') {
+        const selectedRoles = Array.from(document.querySelectorAll('input[name="mUserRoles"]:checked')).map(cb => cb.value);
+        const email = document.getElementById('mEmail').value.trim();
+        const name = document.getElementById('mName').value.trim();
+        if (!email) {
+          alert('Email address is required to invite user.');
+          return;
+        }
+        await api.inviteUser({ email, name, role_ids: selectedRoles });
       } else if (type === 'app') {
         const appData = {
           id: document.getElementById('mID').value.trim(),
@@ -695,14 +828,19 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         await api.saveApp(appData, expectedVersion);
       } else if (type === 'idp') {
+        const providerSel = document.getElementById('mType').value;
+        const providerTypeMap = { google: 'oidc', github: 'oauth2', mock: 'mock' };
+        const providerIdMap = { google: 'google', github: 'github', mock: document.getElementById('mID')?.value.trim() || 'mock_idp' };
         const idpData = {
-          id: document.getElementById('mID').value.trim(),
-          name: document.getElementById('mName').value.trim(),
-          type: document.getElementById('mType').value,
+          id: providerIdMap[providerSel] || providerSel,
+          name: document.getElementById('mName').value.trim() || providerSel,
+          type: providerTypeMap[providerSel] || providerSel,
           client_id: document.getElementById('mClientID').value.trim(),
+          client_secret: document.getElementById('mClientSecret')?.value.trim() || '',
           enabled: true,
           version: expectedVersion
         };
+        if (!idpData.client_secret) delete idpData.client_secret;
         await api.saveIDP(idpData, expectedVersion);
       } else if (type === 'workload') {
         const workloadData = {
@@ -754,12 +892,12 @@ document.addEventListener('DOMContentLoaded', () => {
       closeModal();
       loadCurrentTabData();
     } catch (err) {
-      if (!err.message.includes('cas_conflict')) {
+      if (!err.message || !err.message.includes('cas_conflict')) {
         alert(`Error saving record: ${err.message}`);
       }
     }
   }
 
   // Initial boot
-  switchTab('tenants');
+  switchTab('organizations');
 });

@@ -28,16 +28,16 @@ var (
 	ErrUnauthorized    = errors.New("unauthorized workload or scope")
 )
 
-// BuildSPIFFEID constructs standard SPIFFE URI format: spiffe://<domain>/ns/<tenant>/sa/<workload>
-func BuildSPIFFEID(domain, tenantID, workloadID string) string {
+// BuildSPIFFEID constructs standard SPIFFE URI format: spiffe://<domain>/ns/<organization>/sa/<workload>
+func BuildSPIFFEID(domain, orgID, workloadID string) string {
 	if domain == "" {
 		domain = "authpole.local"
 	}
-	return fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", domain, tenantID, workloadID)
+	return fmt.Sprintf("spiffe://%s/ns/%s/sa/%s", domain, orgID, workloadID)
 }
 
-// ParseSPIFFEID extracts domain, tenantID, and workloadID from a SPIFFE URI string.
-func ParseSPIFFEID(spiffeID string) (domain, tenantID, workloadID string, err error) {
+// ParseSPIFFEID extracts domain, orgID, and workloadID from a SPIFFE URI string.
+func ParseSPIFFEID(spiffeID string) (domain, orgID, workloadID string, err error) {
 	u, err := url.Parse(spiffeID)
 	if err != nil || u.Scheme != "spiffe" {
 		return "", "", "", ErrInvalidSPIFFEID

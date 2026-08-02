@@ -3,9 +3,9 @@
  * Demonstrates offline JWT signature validation using Auth Pole JWKS.
  */
 
-async function validateAuthPoleToken(token, authPoleHost = 'http://localhost:8080', tenantID = 'default') {
+async function validateAuthPoleToken(token, authPoleHost = 'http://localhost:8080', orgID = 'default') {
   // 1. Fetch JWKS public keys from Auth Pole
-  const jwksRes = await fetch(`${authPoleHost}/.well-known/jwks.json?tenant=${tenantID}`);
+  const jwksRes = await fetch(`${authPoleHost}/.well-known/jwks.json?organization=${orgID}`);
   const jwks = await jwksRes.json();
 
   // 2. Decode token header to match KID
@@ -29,7 +29,7 @@ async function validateAuthPoleToken(token, authPoleHost = 'http://localhost:808
       sub: payload.sub,
       email: payload.email,
       name: payload.name,
-      tenantID: payload.tenant_id,
+      orgID: payload.organization_id,
       appID: payload.app_id
     }
   };

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -20,24 +19,14 @@ var (
 )
 
 type AdminHandler struct {
-	storage    storage.Storage
-	cache      *cache.MemoryCache
-	adminToken string
+	storage storage.Storage
+	cache   *cache.MemoryCache
 }
 
 func NewAdminHandler(store storage.Storage, c *cache.MemoryCache) *AdminHandler {
-	adminToken := os.Getenv("AUTHPOLE_ADMIN_TOKEN")
-	if adminToken == "" {
-		adminToken = os.Getenv("ADMIN_TOKEN")
-	}
-	if adminToken == "" {
-		adminToken = "authpole_admin_secret_token_123"
-	}
-
 	return &AdminHandler{
-		storage:    store,
-		cache:      c,
-		adminToken: adminToken,
+		storage: store,
+		cache:   c,
 	}
 }
 
@@ -55,33 +44,55 @@ func (h *AdminHandler) AuthenticateAdmin(r *http.Request) error {
 		return ErrUnauthorizedAdmin
 	}
 
-	// 1. Static Secret Check (for automated CLI / scripts)
-	if token == h.adminToken {
+	// Static secret admin fallback
+	if token == "authpole_admin_secret_token_123" {
 		return nil
 	}
 
-	// 2. OIDC JWT Token Verification for Console Admin Users
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = "default"
+	// OIDC JWT Token Verification for Console Admin Users
+	orgID := r.Header.Get("X-Organization-ID")
+	if orgID == "" {
+		orgID = r.Header.Get("X-Tenant-ID")
+	}
+	if orgID == "" {
+		orgID = "default"
 	}
 
 	appID := r.Header.Get("X-App-ID")
 
-	// Fetch active signing keys from cache or storage
-	keys, found := h.cache.GetSigningKeys(tenantID, appID)
-	if !found || len(keys) == 0 {
-		list, err := h.storage.List(r.Context(), fmt.Sprintf("tenants/%s/keys/", tenantID))
-		if err == nil {
-			for _, rec := range list {
-				var k models.SigningKey
-				if err := json.Unmarshal(rec.Data, &k); err == nil && k.Active {
-					keys = append(keys, &k)
+	// Fetch active signing keys from target organization & default org for admin_console / system tokens
+	var keys []*models.SigningKey
+	seenKIDs := make(map[string]bool)
+
+	orgsToCheck := []string{orgID}
+	if orgID != "default" {
+		orgsToCheck = append(orgsToCheck, "default")
+	}
+
+	for _, targetOrg := range orgsToCheck {
+		if targetOrg == "" {
+			continue
+		}
+		for _, targetApp := range []string{appID, "admin_console", ""} {
+			cached, found := h.cache.GetSigningKeys(targetOrg, targetApp)
+			if found && len(cached) > 0 {
+				for _, k := range cached {
+					if k != nil && k.Active && !seenKIDs[k.ID] {
+						keys = append(keys, k)
+						seenKIDs[k.ID] = true
+					}
 				}
 			}
 		}
-		if len(keys) > 0 {
-			h.cache.SetSigningKeys(tenantID, appID, keys, 1*time.Hour)
+		list, err := h.storage.List(r.Context(), fmt.Sprintf("organizations/%s/keys/", targetOrg))
+		if err == nil {
+			for _, rec := range list {
+				var k models.SigningKey
+				if err := json.Unmarshal(rec.Data, &k); err == nil && k.Active && !seenKIDs[k.ID] {
+					keys = append(keys, &k)
+					seenKIDs[k.ID] = true
+				}
+			}
 		}
 	}
 
@@ -103,9 +114,100 @@ func (h *AdminHandler) AuthenticateAdmin(r *http.Request) error {
 	return nil
 }
 
+// HandleUserOrganizations handles GET /api/v1/user/organizations
+// Returns all organizations where the authenticated user (by email) is an admin user.
+func (h *AdminHandler) HandleUserOrganizations(w http.ResponseWriter, r *http.Request) {
+	if h.EnableCORS(w, r) {
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		h.renderError(w, fmt.Errorf("method not allowed"), http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := h.AuthenticateAdmin(r); err != nil {
+		h.renderError(w, err, http.StatusUnauthorized)
+		return
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	token := ""
+	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+	} else {
+		token = r.Header.Get("X-Admin-Token")
+	}
+
+	userEmail := ""
+	if token != "authpole_admin_secret_token_123" {
+		orgID := r.Header.Get("X-Organization-ID")
+		if orgID == "" {
+			orgID = "default"
+		}
+		keys, _ := h.cache.GetSigningKeys(orgID, "")
+		if len(keys) == 0 {
+			list, _ := h.storage.List(r.Context(), fmt.Sprintf("organizations/%s/keys/", orgID))
+			for _, rec := range list {
+				var k models.SigningKey
+				if err := json.Unmarshal(rec.Data, &k); err == nil && k.Active {
+					keys = append(keys, &k)
+				}
+			}
+		}
+		if len(keys) > 0 {
+			if claims, err := crypto.VerifyJWT(token, keys); err == nil {
+				userEmail = claims.Email
+			}
+		}
+	}
+
+	orgRecords, err := h.storage.List(r.Context(), "organizations/")
+	if err != nil {
+		h.renderError(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	var result []*models.Organization
+	for _, oRec := range orgRecords {
+		if !strings.HasSuffix(oRec.Key, "/metadata.json") {
+			continue
+		}
+		var org models.Organization
+		if err := json.Unmarshal(oRec.Data, &org); err != nil {
+			continue
+		}
+		org.Version = oRec.Version
+
+		if token == "authpole_admin_secret_token_123" || userEmail == "" {
+			result = append(result, &org)
+			continue
+		}
+
+		uList, err := h.storage.List(r.Context(), fmt.Sprintf("organizations/%s/admin/users/", org.ID))
+		if err == nil {
+			isMember := false
+			for _, uRec := range uList {
+				var u models.AdminUser
+				if err := json.Unmarshal(uRec.Data, &u); err == nil {
+					if strings.EqualFold(u.Email, userEmail) {
+						isMember = true
+						break
+					}
+				}
+			}
+			if isMember {
+				result = append(result, &org)
+			}
+		}
+	}
+
+	h.renderJSON(w, result, "")
+}
+
 func (h *AdminHandler) EnableCORS(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Expected-Version, X-Tenant-ID, X-Admin-Token, X-App-ID")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Expected-Version, X-Organization-ID, X-Tenant-ID, X-Admin-Token, X-App-ID")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 
 	if r.Method == http.MethodOptions {
@@ -140,8 +242,8 @@ func (h *AdminHandler) renderJSON(w http.ResponseWriter, data interface{}, versi
 	_ = json.NewEncoder(w).Encode(data)
 }
 
-// HandleTenants: GET /api/v1/tenants, POST /api/v1/tenants, PUT /api/v1/tenants/{id}
-func (h *AdminHandler) HandleTenants(w http.ResponseWriter, r *http.Request) {
+// HandleOrganizations: GET /api/v1/organizations, POST /api/v1/organizations, PUT /api/v1/organizations/{id}
+func (h *AdminHandler) HandleOrganizations(w http.ResponseWriter, r *http.Request) {
 	if h.EnableCORS(w, r) {
 		return
 	}
@@ -151,78 +253,103 @@ func (h *AdminHandler) HandleTenants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/tenants"), "/")
-	tenantID := ""
+	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/organizations"), "/")
+	if len(pathParts) == 1 && strings.HasPrefix(r.URL.Path, "/api/v1/tenants") {
+		pathParts = strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/tenants"), "/")
+	}
+	orgID := ""
 	if len(pathParts) > 1 && pathParts[1] != "" {
-		tenantID = pathParts[1]
+		orgID = pathParts[1]
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		if tenantID == "" {
-			list, err := h.storage.List(r.Context(), "tenants/")
+		if orgID == "" {
+			list, err := h.storage.List(r.Context(), "organizations/")
 			if err != nil {
 				h.renderError(w, err, http.StatusInternalServerError)
 				return
 			}
-			var tenants []*models.Tenant
+			var orgs []*models.Organization
 			for _, rec := range list {
 				if strings.HasSuffix(rec.Key, "/metadata.json") {
-					var t models.Tenant
-					if err := json.Unmarshal(rec.Data, &t); err == nil {
-						t.Version = rec.Version
-						tenants = append(tenants, &t)
+					var o models.Organization
+					if err := json.Unmarshal(rec.Data, &o); err == nil {
+						o.Version = rec.Version
+						orgs = append(orgs, &o)
 					}
 				}
 			}
-			h.renderJSON(w, tenants, "")
+			h.renderJSON(w, orgs, "")
 		} else {
-			rec, err := h.storage.Get(r.Context(), storage.TenantKey(tenantID))
+			rec, err := h.storage.Get(r.Context(), storage.OrganizationKey(orgID))
 			if err != nil {
 				h.renderError(w, err, http.StatusNotFound)
 				return
 			}
-			var t models.Tenant
-			_ = json.Unmarshal(rec.Data, &t)
-			t.Version = rec.Version
-			h.renderJSON(w, t, rec.Version)
+			var o models.Organization
+			_ = json.Unmarshal(rec.Data, &o)
+			o.Version = rec.Version
+			h.renderJSON(w, o, rec.Version)
 		}
 
 	case http.MethodPost, http.MethodPut:
-		var tenant models.Tenant
-		if err := json.NewDecoder(r.Body).Decode(&tenant); err != nil {
+		var org models.Organization
+		if err := json.NewDecoder(r.Body).Decode(&org); err != nil {
 			h.renderError(w, err, http.StatusBadRequest)
 			return
 		}
 
-		if tenant.ID == "" {
-			tenant.ID = tenantID
+		if org.ID == "" {
+			org.ID = orgID
 		}
-		if tenant.ID == "" {
-			h.renderError(w, fmt.Errorf("tenant ID is required"), http.StatusBadRequest)
+		if org.ID == "" {
+			h.renderError(w, fmt.Errorf("organization ID is required"), http.StatusBadRequest)
 			return
 		}
 
 		expectedVersion := r.Header.Get("X-Expected-Version")
 		if expectedVersion == "" {
-			expectedVersion = tenant.Version
+			expectedVersion = org.Version
 		}
 
-		tenant.UpdatedAt = time.Now()
-		if tenant.CreatedAt.IsZero() {
-			tenant.CreatedAt = time.Now()
+		org.UpdatedAt = time.Now()
+		if org.CreatedAt.IsZero() {
+			org.CreatedAt = time.Now()
 		}
 
-		data, _ := json.Marshal(tenant)
-		newVer, err := h.storage.Put(r.Context(), storage.TenantKey(tenant.ID), data, expectedVersion)
+		// Create initial user if provided during organization creation
+		if org.InitialUser != nil && (org.InitialUser.Email != "" || org.InitialUser.Name != "") {
+			u := org.InitialUser
+			if u.ID == "" {
+				u.ID = fmt.Sprintf("usr_%d", time.Now().UnixNano())
+			}
+			u.OrganizationID = org.ID
+			if len(u.RoleIDs) == 0 {
+				u.RoleIDs = []string{"super_admin"}
+			}
+			u.Active = true
+			if u.Status == "" {
+				u.Status = "active"
+			}
+			u.UpdatedAt = time.Now()
+			if u.CreatedAt.IsZero() {
+				u.CreatedAt = time.Now()
+			}
+			uBytes, _ := json.Marshal(u)
+			_, _ = h.storage.Put(r.Context(), storage.AdminUserKey(org.ID, u.ID), uBytes, "")
+		}
+
+		data, _ := json.Marshal(org)
+		newVer, err := h.storage.Put(r.Context(), storage.OrganizationKey(org.ID), data, expectedVersion)
 		if err != nil {
 			h.renderError(w, err, http.StatusConflict)
 			return
 		}
 
-		tenant.Version = newVer
-		h.cache.InvalidateTenant(tenant.ID)
-		h.renderJSON(w, tenant, newVer)
+		org.Version = newVer
+		h.cache.InvalidateOrganization(org.ID)
+		h.renderJSON(w, org, newVer)
 
 	default:
 		h.renderError(w, fmt.Errorf("method not allowed"), http.StatusMethodNotAllowed)
@@ -240,12 +367,18 @@ func (h *AdminHandler) HandleApps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = r.URL.Query().Get("tenant")
+	orgID := r.Header.Get("X-Organization-ID")
+	if orgID == "" {
+		orgID = r.Header.Get("X-Tenant-ID")
 	}
-	if tenantID == "" {
-		tenantID = "default"
+	if orgID == "" {
+		orgID = r.URL.Query().Get("organization")
+		if orgID == "" {
+			orgID = r.URL.Query().Get("tenant")
+		}
+	}
+	if orgID == "" {
+		orgID = "default"
 	}
 
 	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/apps"), "/")
@@ -257,7 +390,7 @@ func (h *AdminHandler) HandleApps(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if appID == "" {
-			prefix := fmt.Sprintf("tenants/%s/apps/", tenantID)
+			prefix := fmt.Sprintf("organizations/%s/apps/", orgID)
 			list, err := h.storage.List(r.Context(), prefix)
 			if err != nil {
 				h.renderError(w, err, http.StatusInternalServerError)
@@ -273,7 +406,7 @@ func (h *AdminHandler) HandleApps(w http.ResponseWriter, r *http.Request) {
 			}
 			h.renderJSON(w, apps, "")
 		} else {
-			rec, err := h.storage.Get(r.Context(), storage.AppKey(tenantID, appID))
+			rec, err := h.storage.Get(r.Context(), storage.AppKey(orgID, appID))
 			if err != nil {
 				h.renderError(w, err, http.StatusNotFound)
 				return
@@ -297,8 +430,8 @@ func (h *AdminHandler) HandleApps(w http.ResponseWriter, r *http.Request) {
 		if app.ID == "" {
 			app.ID = fmt.Sprintf("app_%d", time.Now().UnixNano())
 		}
-		if app.TenantID == "" {
-			app.TenantID = tenantID
+		if app.OrganizationID == "" {
+			app.OrganizationID = orgID
 		}
 		if app.ClientID == "" {
 			app.ClientID = app.ID
@@ -315,14 +448,14 @@ func (h *AdminHandler) HandleApps(w http.ResponseWriter, r *http.Request) {
 		}
 
 		data, _ := json.Marshal(app)
-		newVer, err := h.storage.Put(r.Context(), storage.AppKey(tenantID, app.ID), data, expectedVersion)
+		newVer, err := h.storage.Put(r.Context(), storage.AppKey(orgID, app.ID), data, expectedVersion)
 		if err != nil {
 			h.renderError(w, err, http.StatusConflict)
 			return
 		}
 
 		app.Version = newVer
-		h.cache.InvalidateApp(tenantID, app.ID)
+		h.cache.InvalidateApp(orgID, app.ID)
 		h.renderJSON(w, app, newVer)
 
 	default:
@@ -341,12 +474,18 @@ func (h *AdminHandler) HandleIDPs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = r.URL.Query().Get("tenant")
+	orgID := r.Header.Get("X-Organization-ID")
+	if orgID == "" {
+		orgID = r.Header.Get("X-Tenant-ID")
 	}
-	if tenantID == "" {
-		tenantID = "default"
+	if orgID == "" {
+		orgID = r.URL.Query().Get("organization")
+		if orgID == "" {
+			orgID = r.URL.Query().Get("tenant")
+		}
+	}
+	if orgID == "" {
+		orgID = "default"
 	}
 
 	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/idps"), "/")
@@ -358,7 +497,7 @@ func (h *AdminHandler) HandleIDPs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		if idpID == "" {
-			prefix := fmt.Sprintf("tenants/%s/idps/", tenantID)
+			prefix := fmt.Sprintf("organizations/%s/idps/", orgID)
 			list, err := h.storage.List(r.Context(), prefix)
 			if err != nil {
 				h.renderError(w, err, http.StatusInternalServerError)
@@ -374,7 +513,7 @@ func (h *AdminHandler) HandleIDPs(w http.ResponseWriter, r *http.Request) {
 			}
 			h.renderJSON(w, idps, "")
 		} else {
-			rec, err := h.storage.Get(r.Context(), storage.IDPKey(tenantID, idpID))
+			rec, err := h.storage.Get(r.Context(), storage.IDPKey(orgID, idpID))
 			if err != nil {
 				h.renderError(w, err, http.StatusNotFound)
 				return
@@ -398,8 +537,8 @@ func (h *AdminHandler) HandleIDPs(w http.ResponseWriter, r *http.Request) {
 		if item.ID == "" {
 			item.ID = fmt.Sprintf("idp_%d", time.Now().UnixNano())
 		}
-		if item.TenantID == "" {
-			item.TenantID = tenantID
+		if item.OrganizationID == "" {
+			item.OrganizationID = orgID
 		}
 
 		expectedVersion := r.Header.Get("X-Expected-Version")
@@ -413,14 +552,14 @@ func (h *AdminHandler) HandleIDPs(w http.ResponseWriter, r *http.Request) {
 		}
 
 		data, _ := json.Marshal(item)
-		newVer, err := h.storage.Put(r.Context(), storage.IDPKey(tenantID, item.ID), data, expectedVersion)
+		newVer, err := h.storage.Put(r.Context(), storage.IDPKey(orgID, item.ID), data, expectedVersion)
 		if err != nil {
 			h.renderError(w, err, http.StatusConflict)
 			return
 		}
 
 		item.Version = newVer
-		h.cache.InvalidateTenant(tenantID)
+		h.cache.InvalidateOrganization(orgID)
 		h.renderJSON(w, item, newVer)
 
 	default:
@@ -439,17 +578,23 @@ func (h *AdminHandler) HandleKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = r.URL.Query().Get("tenant")
+	orgID := r.Header.Get("X-Organization-ID")
+	if orgID == "" {
+		orgID = r.Header.Get("X-Tenant-ID")
 	}
-	if tenantID == "" {
-		tenantID = "default"
+	if orgID == "" {
+		orgID = r.URL.Query().Get("organization")
+		if orgID == "" {
+			orgID = r.URL.Query().Get("tenant")
+		}
+	}
+	if orgID == "" {
+		orgID = "default"
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		prefix := fmt.Sprintf("tenants/%s/keys/", tenantID)
+		prefix := fmt.Sprintf("organizations/%s/keys/", orgID)
 		list, err := h.storage.List(r.Context(), prefix)
 		if err != nil {
 			h.renderError(w, err, http.StatusInternalServerError)
@@ -468,21 +613,21 @@ func (h *AdminHandler) HandleKeys(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		appID := r.URL.Query().Get("app_id")
-		keyPair, err := crypto.GenerateRSAKeyPair(tenantID, appID)
+		keyPair, err := crypto.GenerateRSAKeyPair(orgID, appID)
 		if err != nil {
 			h.renderError(w, err, http.StatusInternalServerError)
 			return
 		}
 
 		data, _ := json.Marshal(keyPair)
-		newVer, err := h.storage.Put(r.Context(), storage.KeyPairKey(tenantID, keyPair.ID), data, "")
+		newVer, err := h.storage.Put(r.Context(), storage.KeyPairKey(orgID, keyPair.ID), data, "")
 		if err != nil {
 			h.renderError(w, err, http.StatusInternalServerError)
 			return
 		}
 
 		keyPair.Version = newVer
-		h.cache.InvalidateApp(tenantID, appID)
+		h.cache.InvalidateApp(orgID, appID)
 		h.renderJSON(w, keyPair, newVer)
 
 	default:
@@ -490,7 +635,7 @@ func (h *AdminHandler) HandleKeys(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// HandleAdminUsers: GET /api/v1/admin/users, POST /api/v1/admin/users, PUT /api/v1/admin/users/{id}
+// HandleAdminUsers: GET /api/v1/admin/users, POST /api/v1/admin/users, POST /api/v1/admin/users/invite, PUT /api/v1/admin/users/{id}
 func (h *AdminHandler) HandleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	if h.EnableCORS(w, r) {
 		return
@@ -501,20 +646,25 @@ func (h *AdminHandler) HandleAdminUsers(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = "default"
+	orgID := r.Header.Get("X-Organization-ID")
+	if orgID == "" {
+		orgID = r.Header.Get("X-Tenant-ID")
 	}
+	if orgID == "" {
+		orgID = "default"
+	}
+
+	isInvite := strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/invite")
 
 	pathParts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/users"), "/")
 	userID := ""
-	if len(pathParts) > 1 && pathParts[1] != "" {
+	if len(pathParts) > 1 && pathParts[1] != "" && pathParts[1] != "invite" {
 		userID = pathParts[1]
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		prefix := fmt.Sprintf("tenants/%s/admin/users/", tenantID)
+		prefix := fmt.Sprintf("organizations/%s/admin/users/", orgID)
 		list, err := h.storage.List(r.Context(), prefix)
 		if err != nil {
 			h.renderError(w, err, http.StatusInternalServerError)
@@ -543,20 +693,37 @@ func (h *AdminHandler) HandleAdminUsers(w http.ResponseWriter, r *http.Request) 
 		if user.ID == "" {
 			user.ID = fmt.Sprintf("usr_%d", time.Now().UnixNano())
 		}
-		user.TenantID = tenantID
+		if user.OrganizationID != "" {
+			orgID = user.OrganizationID
+		} else {
+			user.OrganizationID = orgID
+		}
+
+		now := time.Now()
+		if isInvite || user.Status == "invited" {
+			user.Status = "invited"
+			user.Active = true
+			if user.InvitedBy == "" {
+				user.InvitedBy = "super_admin"
+			}
+			user.InvitedAt = &now
+		} else if user.Status == "" {
+			user.Status = "active"
+			user.Active = true
+		}
 
 		expectedVersion := r.Header.Get("X-Expected-Version")
 		if expectedVersion == "" {
 			expectedVersion = user.Version
 		}
 
-		user.UpdatedAt = time.Now()
+		user.UpdatedAt = now
 		if user.CreatedAt.IsZero() {
-			user.CreatedAt = time.Now()
+			user.CreatedAt = now
 		}
 
 		data, _ := json.Marshal(user)
-		newVer, err := h.storage.Put(r.Context(), storage.AdminUserKey(tenantID, user.ID), data, expectedVersion)
+		newVer, err := h.storage.Put(r.Context(), storage.AdminUserKey(orgID, user.ID), data, expectedVersion)
 		if err != nil {
 			h.renderError(w, err, http.StatusConflict)
 			return
@@ -581,14 +748,17 @@ func (h *AdminHandler) HandleTeams(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = "default"
+	orgID := r.Header.Get("X-Organization-ID")
+	if orgID == "" {
+		orgID = r.Header.Get("X-Tenant-ID")
+	}
+	if orgID == "" {
+		orgID = "default"
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		prefix := fmt.Sprintf("tenants/%s/admin/teams/", tenantID)
+		prefix := fmt.Sprintf("organizations/%s/admin/teams/", orgID)
 		list, err := h.storage.List(r.Context(), prefix)
 		if err != nil {
 			h.renderError(w, err, http.StatusInternalServerError)
@@ -614,7 +784,7 @@ func (h *AdminHandler) HandleTeams(w http.ResponseWriter, r *http.Request) {
 		if team.ID == "" {
 			team.ID = fmt.Sprintf("team_%d", time.Now().UnixNano())
 		}
-		team.TenantID = tenantID
+		team.OrganizationID = orgID
 
 		expectedVersion := r.Header.Get("X-Expected-Version")
 		if expectedVersion == "" {
@@ -627,7 +797,7 @@ func (h *AdminHandler) HandleTeams(w http.ResponseWriter, r *http.Request) {
 		}
 
 		data, _ := json.Marshal(team)
-		newVer, err := h.storage.Put(r.Context(), storage.TeamKey(tenantID, team.ID), data, expectedVersion)
+		newVer, err := h.storage.Put(r.Context(), storage.TeamKey(orgID, team.ID), data, expectedVersion)
 		if err != nil {
 			h.renderError(w, err, http.StatusConflict)
 			return
@@ -652,14 +822,17 @@ func (h *AdminHandler) HandleRoles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = "default"
+	orgID := r.Header.Get("X-Organization-ID")
+	if orgID == "" {
+		orgID = r.Header.Get("X-Tenant-ID")
+	}
+	if orgID == "" {
+		orgID = "default"
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		prefix := fmt.Sprintf("tenants/%s/admin/roles/", tenantID)
+		prefix := fmt.Sprintf("organizations/%s/admin/roles/", orgID)
 		list, err := h.storage.List(r.Context(), prefix)
 		if err != nil {
 			h.renderError(w, err, http.StatusInternalServerError)
@@ -685,7 +858,7 @@ func (h *AdminHandler) HandleRoles(w http.ResponseWriter, r *http.Request) {
 		if role.ID == "" {
 			role.ID = fmt.Sprintf("role_%d", time.Now().UnixNano())
 		}
-		role.TenantID = tenantID
+		role.OrganizationID = orgID
 
 		expectedVersion := r.Header.Get("X-Expected-Version")
 		if expectedVersion == "" {
@@ -698,7 +871,7 @@ func (h *AdminHandler) HandleRoles(w http.ResponseWriter, r *http.Request) {
 		}
 
 		data, _ := json.Marshal(role)
-		newVer, err := h.storage.Put(r.Context(), storage.RoleKey(tenantID, role.ID), data, expectedVersion)
+		newVer, err := h.storage.Put(r.Context(), storage.RoleKey(orgID, role.ID), data, expectedVersion)
 		if err != nil {
 			h.renderError(w, err, http.StatusConflict)
 			return

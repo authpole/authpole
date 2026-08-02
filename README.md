@@ -10,12 +10,12 @@ Unlike Keycloak, **Auth Pole does not store or manage user credentials/user data
 
 - **Mediator Proxy IDP**: Implements standard OIDC (`/.well-known/openid-configuration`, `/oauth/v2/authorize`, `/oauth/v2/token`, `/oauth/v2/userinfo`) and federates upstream identity context without maintaining internal user passwords.
 - **Machine-to-Machine (M2M) & SPIFFE Provider**:
-  - Acts as a SPIFFE Identity Provider issuing standard SVIDs (`spiffe://<domain>/ns/<tenant>/sa/<workload>`).
+  - Acts as a SPIFFE Identity Provider issuing standard SVIDs (`spiffe://<domain>/ns/<organization>/sa/<workload>`).
   - Workloads authenticate using long-expiry SPIFFE client certificates to request short-lived (15-min) SPIFFE JWT-SVID tokens (`/api/v1/spiffe/svid`) with fine-grained scopes.
   - Authorizing machines query `/.well-known/spiffe/bundle` to refresh CA certificates and public signing keys to validate machine requests offline.
 - **Zero-Latency Access Path**: In-memory thread-safe caching (`pkg/cache`) ensures JWT token verification requests (`/api/v1/auth/validate`) execute in sub-millisecond time with zero DB or S3 reads.
 - **S3 Storage with CAS Concurrency Control**: Minimal configuration, certificates, trust settings, and console RBAC are persisted in S3 (or S3-compatible emulator) with Compare-And-Swap (CAS) optimistic locking using `ETag`/`VersionID` headers.
-- **Optimized Horizontal Scale & Sharding**: Partitioned by `TenantID:AppID` hash (excluding KeyID), ensuring that all signing keys and certs required for an application are co-located on minimal server memory nodes across a cluster.
+- **Optimized Horizontal Scale & Sharding**: Partitioned by `OrganizationID:AppID` hash (excluding KeyID), ensuring that all signing keys and certs required for an application are co-located on minimal server memory nodes across a cluster.
 - **Decoupled Admin Console UI**: Standalone static web application (`web/admin/`) designed to be hosted on a separate domain (e.g., `admin.authpole.io`), communicating via CORS REST APIs with real-time CAS conflict detection modals.
 
 ---
@@ -34,13 +34,27 @@ go build -o authpole ./cmd/server
 
 Server endpoints will be active at:
 - **OIDC Discovery**: `http://localhost:8080/.well-known/openid-configuration`
-- **JWKS Download**: `http://localhost:8080/.well-known/jwks.json?tenant=default`
+- **JWKS Download**: `http://localhost:8080/.well-known/jwks.json?organization=default`
 - **SPIFFE SVID Endpoint**: `http://localhost:8080/api/v1/spiffe/svid`
 - **SPIFFE Trust Bundle**: `http://localhost:8080/.well-known/spiffe/bundle`
 - **Access Path Validation**: `http://localhost:8080/api/v1/auth/validate`
-- **Admin REST API**: `http://localhost:8080/api/v1/tenants`
+- **Admin REST API**: `http://localhost:8080/api/v1/organizations`
 
-### 2. Launch Standalone Admin Console (`admin.*`)
+### 2. Global Platform Admin OAuth Credentials (Environment Variables)
+
+System-level Google & GitHub OAuth client credentials used for signing into the Platform Admin Console are configured globally via environment variables (or AWS Secrets Manager):
+
+```bash
+export AUTHPOLE_GOOGLE_CLIENT_ID="123456789-abc.apps.googleusercontent.com"
+export AUTHPOLE_GOOGLE_CLIENT_SECRET="your_google_client_secret"
+
+export AUTHPOLE_GITHUB_CLIENT_ID="your_github_client_id"
+export AUTHPOLE_GITHUB_CLIENT_SECRET="your_github_client_secret"
+```
+
+---
+
+### 3. Launch Standalone Admin Console (`admin.*`)
 
 The Admin Console is located in `web/admin/` as a static SPA. Serve it using any static file server:
 
@@ -59,7 +73,7 @@ Open `http://localhost:3000` in your browser. Configure the **Auth Pole API Host
 ```http
 POST /api/v1/spiffe/svid HTTP/1.1
 Host: localhost:8080
-X-Tenant-ID: default
+X-Organization-ID: default
 X-SPIFFE-Client-Cert: -----BEGIN CERTIFICATE-----\n...
 Content-Type: application/json
 
@@ -79,14 +93,14 @@ Content-Type: application/json
   "token_type": "Bearer",
   "expires_in": 900,
   "scope": "read:transactions write:payments",
-  "tenant_id": "default"
+  "organization_id": "default"
 }
 ```
 
 ### 2. Authorizing Machine Refreshes Trust Bundle
 
 ```http
-GET /.well-known/spiffe/bundle?tenant=default HTTP/1.1
+GET /.well-known/spiffe/bundle?organization=default HTTP/1.1
 Host: localhost:8080
 ```
 
@@ -95,7 +109,7 @@ Host: localhost:8080
 ```json
 {
   "spiffe_id": "spiffe://authpole.local/ns/default/sa/trust-bundle",
-  "tenant_id": "default",
+  "organization_id": "default",
   "domain": "authpole.local",
   "keys": {
     "keys": [
@@ -116,7 +130,7 @@ All persistent updates sent to Auth Pole require the current object version:
 POST /api/v1/admin/spiffe/workloads HTTP/1.1
 Host: localhost:8080
 Content-Type: application/json
-X-Tenant-ID: default
+X-Organization-ID: default
 X-Expected-Version: v1_ab12cd34
 
 {

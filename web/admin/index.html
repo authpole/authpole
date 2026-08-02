@@ -23,17 +23,17 @@
       </div>
 
       <div class="tenant-selector-card">
-        <label for="tenantSelect" class="field-label">Active Tenant</label>
+        <label for="organizationSelect" class="field-label">Active Organization</label>
         <div class="select-wrapper">
-          <select id="tenantSelect">
-            <option value="default">default (Default Tenant)</option>
+          <select id="organizationSelect">
+            <option value="default">default (Default Organization)</option>
           </select>
         </div>
       </div>
 
       <nav class="nav-menu">
-        <a href="#tenants" class="nav-item active" data-tab="tenants">
-          <span class="nav-icon">🏢</span> Tenants
+        <a href="#organizations" class="nav-item active" data-tab="organizations">
+          <span class="nav-icon">🏢</span> Organizations
         </a>
         <a href="#apps" class="nav-item" data-tab="apps">
           <span class="nav-icon">📱</span> Applications (SPs)
@@ -61,15 +61,10 @@
           <span class="status-text" id="statusText">Connected</span>
         </div>
         <label for="apiHostInput" class="field-label" style="margin-top: 8px;">Auth Pole API Host</label>
-        <input type="text" id="apiHostInput" value="http://localhost:8080" class="input-sm" />
+        <input type="text" id="apiHostInput" value="https://authpole.swii.sh" class="input-sm" />
         
         <!-- OIDC Admin User Profile -->
         <div id="oidcProfileCard" class="user-profile-card" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color);">
-          <div id="unauthProfileView">
-            <button id="oidcSignInBtn" class="btn btn-primary btn-block" style="padding: 0.4rem; font-size: 0.8rem;">
-              🔑 Sign In with OIDC
-            </button>
-          </div>
           <div id="authProfileView" class="hidden">
             <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
               <div style="width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #0ea5e9, #6366f1); display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: bold;">👤</div>
@@ -83,9 +78,6 @@
             </button>
           </div>
         </div>
-
-        <label for="adminTokenInput" class="field-label" style="margin-top: 8px;">Static Secret Fallback</label>
-        <input type="password" id="adminTokenInput" value="authpole_admin_secret_token_123" placeholder="Bearer Token" class="input-sm" />
       </div>
     </aside>
 
@@ -94,8 +86,8 @@
       <!-- Top Banner -->
       <header class="top-header">
         <div class="page-title-area">
-          <h1 id="pageTitle">Tenants</h1>
-          <p id="pageDescription" class="page-subtitle">Manage multi-tenant isolation units and domain settings.</p>
+          <h1 id="pageTitle">Organizations</h1>
+          <p id="pageDescription" class="page-subtitle">Manage multi-tenant organization isolation units and domain settings.</p>
         </div>
         <div class="header-actions">
           <button id="refreshBtn" class="btn btn-secondary">
@@ -109,9 +101,9 @@
 
       <!-- Dynamic Tab Views -->
       <section class="content-body">
-        <!-- Tenants Tab -->
-        <div id="tab-tenants" class="tab-pane active">
-          <div class="grid grid-cols-3" id="tenantsGrid">
+        <!-- Organizations Tab -->
+        <div id="tab-organizations" class="tab-pane active">
+          <div class="grid grid-cols-3" id="organizationsGrid">
             <!-- Rendered dynamically -->
           </div>
         </div>
@@ -148,7 +140,7 @@
           <div class="card-section">
             <div class="section-header">
               <div>
-                <h2>Tenant Public JWKS (JSON Web Key Set)</h2>
+                <h2>Organization Public JWKS (JSON Web Key Set)</h2>
                 <p class="subtitle">Downstream service providers download this public key set for zero-latency offline signature validation.</p>
               </div>
               <button id="downloadJwksBtn" class="btn btn-secondary">
@@ -191,6 +183,11 @@
           </div>
 
           <div id="subtab-rbac-users" class="subtab-pane active">
+            <div style="display: flex; justify-content: flex-end; margin-bottom: 1rem; gap: 10px;">
+              <button id="inviteUserBtn" class="btn btn-primary">
+                <span>📧</span> Invite User
+              </button>
+            </div>
             <div class="table-card">
               <table class="data-table">
                 <thead>
@@ -329,6 +326,24 @@
       <div class="modal-footer style-center">
         <button id="casConflictRefreshBtn" class="btn btn-primary">
           🔄 Reload Latest Data
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fullscreen Login Screen Overlay -->
+  <div id="loginScreenOverlay" class="modal-overlay hidden" style="background: rgba(7, 10, 18, 0.95); backdrop-filter: blur(12px); z-index: 9999; display: flex; align-items: center; justify-content: center;">
+    <div class="card" style="width: 400px; max-width: 90%; text-align: center; padding: 2.5rem; border: 1px solid var(--border-color); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);">
+      <div style="font-size: 3rem; margin-bottom: 0.5rem;">⚡</div>
+      <h2 style="font-size: 1.5rem; font-weight: 800; color: var(--text-color); margin-bottom: 0.5rem;">AUTH POLE</h2>
+      <p class="subtitle" style="margin-bottom: 2rem;">Sign in to your account to manage your organizations, service providers, and SPIFFE workloads.</p>
+      
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <button id="loginGoogleBtn" class="btn btn-secondary btn-block" style="padding: 0.75rem; font-size: 0.95rem; justify-content: center; font-weight: 600;">
+          🌐 Sign In with Google
+        </button>
+        <button id="loginGithubBtn" class="btn btn-secondary btn-block" style="padding: 0.75rem; font-size: 0.95rem; justify-content: center; font-weight: 600;">
+          🐙 Sign In with GitHub
         </button>
       </div>
     </div>

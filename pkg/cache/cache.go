@@ -64,12 +64,12 @@ func (c *MemoryCache) Delete(key string) {
 	delete(c.items, key)
 }
 
-// InvalidateTenant removes all cached items for a given tenant.
-func (c *MemoryCache) InvalidateTenant(tenantID string) {
+// InvalidateOrganization removes all cached items for a given organization.
+func (c *MemoryCache) InvalidateOrganization(orgID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	prefix := fmt.Sprintf("t:%s:", tenantID)
+	prefix := fmt.Sprintf("o:%s:", orgID)
 	for k := range c.items {
 		if len(k) >= len(prefix) && k[:len(prefix)] == prefix {
 			delete(c.items, k)
@@ -77,14 +77,14 @@ func (c *MemoryCache) InvalidateTenant(tenantID string) {
 	}
 }
 
-// InvalidateApp removes cached items for a specific tenant application.
-func (c *MemoryCache) InvalidateApp(tenantID, appID string) {
+// InvalidateApp removes cached items for a specific organization application.
+func (c *MemoryCache) InvalidateApp(orgID, appID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	appPrefix := fmt.Sprintf("t:%s:app:%s", tenantID, appID)
-	keyPrefix := fmt.Sprintf("t:%s:keys:%s", tenantID, appID)
-	jwksPrefix := fmt.Sprintf("t:%s:jwks:%s", tenantID, appID)
+	appPrefix := fmt.Sprintf("o:%s:app:%s", orgID, appID)
+	keyPrefix := fmt.Sprintf("o:%s:keys:%s", orgID, appID)
+	jwksPrefix := fmt.Sprintf("o:%s:jwks:%s", orgID, appID)
 
 	for k := range c.items {
 		if k == appPrefix || k == keyPrefix || k == jwksPrefix {
@@ -109,30 +109,30 @@ func (c *MemoryCache) startJanitor(interval time.Duration) {
 
 // Helpers for type-safe cache keys
 
-func CacheKeyTenant(tenantID string) string {
-	return fmt.Sprintf("t:%s:meta", tenantID)
+func CacheKeyOrganization(orgID string) string {
+	return fmt.Sprintf("o:%s:meta", orgID)
 }
 
-func CacheKeyApp(tenantID, appID string) string {
-	return fmt.Sprintf("t:%s:app:%s", tenantID, appID)
+func CacheKeyApp(orgID, appID string) string {
+	return fmt.Sprintf("o:%s:app:%s", orgID, appID)
 }
 
-func CacheKeyIDP(tenantID, idpID string) string {
-	return fmt.Sprintf("t:%s:idp:%s", tenantID, idpID)
+func CacheKeyIDP(orgID, idpID string) string {
+	return fmt.Sprintf("o:%s:idp:%s", orgID, idpID)
 }
 
-func CacheKeySigningKeys(tenantID, appID string) string {
-	return fmt.Sprintf("t:%s:keys:%s", tenantID, appID)
+func CacheKeySigningKeys(orgID, appID string) string {
+	return fmt.Sprintf("o:%s:keys:%s", orgID, appID)
 }
 
-func CacheKeyJWKS(tenantID, appID string) string {
-	return fmt.Sprintf("t:%s:jwks:%s", tenantID, appID)
+func CacheKeyJWKS(orgID, appID string) string {
+	return fmt.Sprintf("o:%s:jwks:%s", orgID, appID)
 }
 
 // Typed getter & setter methods
 
-func (c *MemoryCache) GetApp(tenantID, appID string) (*models.Application, bool) {
-	val, found := c.Get(CacheKeyApp(tenantID, appID))
+func (c *MemoryCache) GetApp(orgID, appID string) (*models.Application, bool) {
+	val, found := c.Get(CacheKeyApp(orgID, appID))
 	if !found {
 		return nil, false
 	}
@@ -140,12 +140,12 @@ func (c *MemoryCache) GetApp(tenantID, appID string) (*models.Application, bool)
 	return app, ok
 }
 
-func (c *MemoryCache) SetApp(tenantID, appID string, app *models.Application, ttl time.Duration) {
-	c.Set(CacheKeyApp(tenantID, appID), app, ttl)
+func (c *MemoryCache) SetApp(orgID, appID string, app *models.Application, ttl time.Duration) {
+	c.Set(CacheKeyApp(orgID, appID), app, ttl)
 }
 
-func (c *MemoryCache) GetSigningKeys(tenantID, appID string) ([]*models.SigningKey, bool) {
-	val, found := c.Get(CacheKeySigningKeys(tenantID, appID))
+func (c *MemoryCache) GetSigningKeys(orgID, appID string) ([]*models.SigningKey, bool) {
+	val, found := c.Get(CacheKeySigningKeys(orgID, appID))
 	if !found {
 		return nil, false
 	}
@@ -153,12 +153,12 @@ func (c *MemoryCache) GetSigningKeys(tenantID, appID string) ([]*models.SigningK
 	return keys, ok
 }
 
-func (c *MemoryCache) SetSigningKeys(tenantID, appID string, keys []*models.SigningKey, ttl time.Duration) {
-	c.Set(CacheKeySigningKeys(tenantID, appID), keys, ttl)
+func (c *MemoryCache) SetSigningKeys(orgID, appID string, keys []*models.SigningKey, ttl time.Duration) {
+	c.Set(CacheKeySigningKeys(orgID, appID), keys, ttl)
 }
 
-func (c *MemoryCache) GetJWKS(tenantID, appID string) ([]byte, bool) {
-	val, found := c.Get(CacheKeyJWKS(tenantID, appID))
+func (c *MemoryCache) GetJWKS(orgID, appID string) ([]byte, bool) {
+	val, found := c.Get(CacheKeyJWKS(orgID, appID))
 	if !found {
 		return nil, false
 	}
@@ -166,6 +166,6 @@ func (c *MemoryCache) GetJWKS(tenantID, appID string) ([]byte, bool) {
 	return jwks, ok
 }
 
-func (c *MemoryCache) SetJWKS(tenantID, appID string, jwks []byte, ttl time.Duration) {
-	c.Set(CacheKeyJWKS(tenantID, appID), jwks, ttl)
+func (c *MemoryCache) SetJWKS(orgID, appID string, jwks []byte, ttl time.Duration) {
+	c.Set(CacheKeyJWKS(orgID, appID), jwks, ttl)
 }

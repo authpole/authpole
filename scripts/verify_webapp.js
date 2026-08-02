@@ -132,7 +132,7 @@ async function runServerChecks() {
     { path: '/healthz', expectCors: true },
     { path: '/.well-known/openid-configuration', expectCors: true },
     { path: '/.well-known/jwks.json', expectCors: true },
-    { path: '/api/v1/tenants', expectCors: true }
+    { path: '/api/v1/organizations', expectCors: true }
   ];
 
   let allPassed = true;

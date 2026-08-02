@@ -13,14 +13,14 @@ import (
 // DownstreamService demonstrates how a microservice validates Auth Pole JWTs offline using downloaded JWKS.
 type DownstreamService struct {
 	authPoleURL string
-	tenantID   string
-	keys       []*models.SigningKey
+	orgID       string
+	keys        []*models.SigningKey
 }
 
-func NewDownstreamService(authPoleURL, tenantID string) (*DownstreamService, error) {
+func NewDownstreamService(authPoleURL, orgID string) (*DownstreamService, error) {
 	s := &DownstreamService{
 		authPoleURL: authPoleURL,
-		tenantID:   tenantID,
+		orgID:       orgID,
 	}
 	if err := s.refreshJWKS(); err != nil {
 		return nil, err
@@ -29,7 +29,7 @@ func NewDownstreamService(authPoleURL, tenantID string) (*DownstreamService, err
 }
 
 func (s *DownstreamService) refreshJWKS() error {
-	url := fmt.Sprintf("%s/.well-known/jwks.json?tenant=%s", s.authPoleURL, s.tenantID)
+	url := fmt.Sprintf("%s/.well-known/jwks.json?organization=%s", s.authPoleURL, s.orgID)
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("failed to fetch JWKS from Auth Pole: %w", err)
@@ -51,6 +51,6 @@ func (s *DownstreamService) ValidateRequestToken(tokenString string) (*models.Au
 
 func main() {
 	fmt.Println("Auth Pole Downstream Integration Example")
-	fmt.Println("Fetch JWKS: GET http://localhost:8080/.well-known/jwks.json?tenant=default")
+	fmt.Println("Fetch JWKS: GET http://localhost:8080/.well-known/jwks.json?organization=default")
 	fmt.Println("Validate Token: GET http://localhost:8080/api/v1/auth/validate")
 }

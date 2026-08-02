@@ -39,9 +39,12 @@ func (h *SPIFFEHandler) IssueSVID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = "default"
+	orgID := r.Header.Get("X-Organization-ID")
+	if orgID == "" {
+		orgID = r.Header.Get("X-Tenant-ID")
+	}
+	if orgID == "" {
+		orgID = "default"
 	}
 
 	// Extract long-expiry client certificate from HTTP header or body
@@ -76,7 +79,7 @@ func (h *SPIFFEHandler) IssueSVID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch SPIFFE Workload definition from storage
-	rec, err := h.storage.Get(r.Context(), storage.SPIFFEWorkloadKey(tenantID, workloadID))
+	rec, err := h.storage.Get(r.Context(), storage.SPIFFEWorkloadKey(orgID, workloadID))
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"workload_not_found","message":"workload %q not found"}`, workloadID), http.StatusNotFound)
 		return
@@ -115,10 +118,10 @@ func (h *SPIFFEHandler) IssueSVID(w http.ResponseWriter, r *http.Request) {
 		grantedScopes = workload.AllowedScopes
 	}
 
-	// Get active tenant signing key
-	keys, found := h.cache.GetSigningKeys(tenantID, "")
+	// Get active organization signing key
+	keys, found := h.cache.GetSigningKeys(orgID, "")
 	if !found || len(keys) == 0 {
-		list, _ := h.storage.List(r.Context(), fmt.Sprintf("tenants/%s/keys/", tenantID))
+		list, _ := h.storage.List(r.Context(), fmt.Sprintf("organizations/%s/keys/", orgID))
 		for _, kRec := range list {
 			var k models.SigningKey
 			if err := json.Unmarshal(kRec.Data, &k); err == nil && k.Active {
@@ -126,37 +129,37 @@ func (h *SPIFFEHandler) IssueSVID(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if len(keys) == 0 {
-			newKey, err := crypto.GenerateRSAKeyPair(tenantID, "")
+			newKey, err := crypto.GenerateRSAKeyPair(orgID, "")
 			if err != nil {
 				http.Error(w, `{"error":"server_error","message":"failed to generate signing key"}`, http.StatusInternalServerError)
 				return
 			}
 			kBytes, _ := json.Marshal(newKey)
-			_, _ = h.storage.Put(r.Context(), storage.KeyPairKey(tenantID, newKey.ID), kBytes, "")
+			_, _ = h.storage.Put(r.Context(), storage.KeyPairKey(orgID, newKey.ID), kBytes, "")
 			keys = append(keys, newKey)
 		}
-		h.cache.SetSigningKeys(tenantID, "", keys, 1*time.Hour)
+		h.cache.SetSigningKeys(orgID, "", keys, 1*time.Hour)
 	}
 
 	activeKey := keys[0]
 	spiffeID := workload.SPIFFEID
 	if spiffeID == "" {
-		spiffeID = spiffe.BuildSPIFFEID("authpole.local", tenantID, workloadID)
+		spiffeID = spiffe.BuildSPIFFEID("authpole.local", orgID, workloadID)
 	}
 
 	audience := reqBody.Audience
 	if audience == "" {
-		audience = fmt.Sprintf("spiffe://%s/ns/%s", "authpole.local", tenantID)
+		audience = fmt.Sprintf("spiffe://%s/ns/%s", "authpole.local", orgID)
 	}
 
 	claims := &models.AuthClaims{
-		Subject:    spiffeID,
-		Issuer:     fmt.Sprintf("https://authpole.io/tenants/%s", tenantID),
-		Audience:   audience,
-		TenantID:   tenantID,
-		WorkloadID: workload.ID,
-		SPIFFEID:   spiffeID,
-		Scope:      strings.Join(grantedScopes, " "),
+		Subject:        spiffeID,
+		Issuer:         fmt.Sprintf("https://authpole.io/organizations/%s", orgID),
+		Audience:       audience,
+		OrganizationID: orgID,
+		WorkloadID:     workload.ID,
+		SPIFFEID:       spiffeID,
+		Scope:          strings.Join(grantedScopes, " "),
 	}
 
 	// Issue short-lived SPIFFE JWT-SVID (15 minutes expiry)
@@ -167,12 +170,12 @@ func (h *SPIFFEHandler) IssueSVID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]interface{}{
-		"svid":       svidToken,
-		"token_type": "Bearer",
-		"spiffe_id":  spiffeID,
-		"expires_in": 900, // 15 minutes
-		"scope":      strings.Join(grantedScopes, " "),
-		"tenant_id":  tenantID,
+		"svid":            svidToken,
+		"token_type":      "Bearer",
+		"spiffe_id":       spiffeID,
+		"expires_in":      900, // 15 minutes
+		"scope":           strings.Join(grantedScopes, " "),
+		"organization_id": orgID,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -185,12 +188,15 @@ func (h *SPIFFEHandler) TrustBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant")
-	if tenantID == "" {
-		tenantID = "default"
+	orgID := r.URL.Query().Get("organization")
+	if orgID == "" {
+		orgID = r.URL.Query().Get("tenant")
+	}
+	if orgID == "" {
+		orgID = "default"
 	}
 
-	list, err := h.storage.List(r.Context(), fmt.Sprintf("tenants/%s/keys/", tenantID))
+	list, err := h.storage.List(r.Context(), fmt.Sprintf("organizations/%s/keys/", orgID))
 	var keys []*models.SigningKey
 	if err == nil {
 		for _, rec := range list {
@@ -211,12 +217,12 @@ func (h *SPIFFEHandler) TrustBundle(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(jwksBytes, &jwksObj)
 
 	bundle := &models.SPIFFETrustBundle{
-		SPIFFEID:  spiffe.BuildSPIFFEID("authpole.local", tenantID, "trust-bundle"),
-		TenantID:  tenantID,
-		Domain:    "authpole.local",
-		Keys:      jwksObj,
-		UpdatedAt: time.Now(),
-		Version:   fmt.Sprintf("tb_%d", time.Now().Unix()),
+		SPIFFEID:       spiffe.BuildSPIFFEID("authpole.local", orgID, "trust-bundle"),
+		OrganizationID: orgID,
+		Domain:         "authpole.local",
+		Keys:           jwksObj,
+		UpdatedAt:      time.Now(),
+		Version:        fmt.Sprintf("tb_%d", time.Now().Unix()),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -236,14 +242,17 @@ func (h *SPIFFEHandler) HandleWorkloads(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	tenantID := r.Header.Get("X-Tenant-ID")
-	if tenantID == "" {
-		tenantID = "default"
+	orgID := r.Header.Get("X-Organization-ID")
+	if orgID == "" {
+		orgID = r.Header.Get("X-Tenant-ID")
+	}
+	if orgID == "" {
+		orgID = "default"
 	}
 
 	switch r.Method {
 	case http.MethodGet:
-		prefix := fmt.Sprintf("tenants/%s/spiffe/workloads/", tenantID)
+		prefix := fmt.Sprintf("organizations/%s/spiffe/workloads/", orgID)
 		list, err := h.storage.List(r.Context(), prefix)
 		if err != nil {
 			h.admin.renderError(w, err, http.StatusInternalServerError)
@@ -269,9 +278,9 @@ func (h *SPIFFEHandler) HandleWorkloads(w http.ResponseWriter, r *http.Request) 
 		if item.ID == "" {
 			item.ID = fmt.Sprintf("workload_%d", time.Now().UnixNano())
 		}
-		item.TenantID = tenantID
+		item.OrganizationID = orgID
 		if item.SPIFFEID == "" {
-			item.SPIFFEID = spiffe.BuildSPIFFEID("authpole.local", tenantID, item.ID)
+			item.SPIFFEID = spiffe.BuildSPIFFEID("authpole.local", orgID, item.ID)
 		}
 
 		// Compute fingerprint if client cert PEM provided
@@ -291,7 +300,7 @@ func (h *SPIFFEHandler) HandleWorkloads(w http.ResponseWriter, r *http.Request) 
 		}
 
 		data, _ := json.Marshal(item)
-		newVer, err := h.storage.Put(r.Context(), storage.SPIFFEWorkloadKey(tenantID, item.ID), data, expectedVersion)
+		newVer, err := h.storage.Put(r.Context(), storage.SPIFFEWorkloadKey(orgID, item.ID), data, expectedVersion)
 		if err != nil {
 			h.admin.renderError(w, err, http.StatusConflict)
 			return

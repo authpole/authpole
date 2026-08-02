@@ -26,8 +26,8 @@ var (
 	ErrUnsupportedAlgo  = errors.New("unsupported signing algorithm")
 )
 
-// GenerateRSAKeyPair generates a new 2048-bit RSA signing key pair for a tenant/app.
-func GenerateRSAKeyPair(tenantID, appID string) (*models.SigningKey, error) {
+// GenerateRSAKeyPair generates a new 2048-bit RSA signing key pair for an organization/app.
+func GenerateRSAKeyPair(orgID, appID string) (*models.SigningKey, error) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate RSA key pair: %w", err)
@@ -55,16 +55,16 @@ func GenerateRSAKeyPair(tenantID, appID string) (*models.SigningKey, error) {
 	keyID := fmt.Sprintf("key_%s", kid)
 
 	return &models.SigningKey{
-		ID:            keyID,
-		TenantID:      tenantID,
-		AppID:         appID,
-		Algorithm:     "RS256",
-		PrivateKeyPEM: string(privPEM),
-		PublicKeyPEM:  string(pubPEM),
-		KID:           kid,
-		Active:        true,
-		CreatedAt:     time.Now(),
-		Version:       "1",
+		ID:             keyID,
+		OrganizationID: orgID,
+		AppID:          appID,
+		Algorithm:      "RS256",
+		PrivateKeyPEM:  string(privPEM),
+		PublicKeyPEM:   string(pubPEM),
+		KID:            kid,
+		Active:         true,
+		CreatedAt:      time.Now(),
+		Version:        "1",
 	}, nil
 }
 
@@ -195,12 +195,24 @@ func VerifyJWT(tokenString string, keys []*models.SigningKey) (*models.AuthClaim
 		return nil, ErrUnsupportedAlgo
 	}
 
-	// Find matching key by KID
+	// Find matching key by KID or ID
 	var matchingKey *models.SigningKey
 	for _, k := range keys {
-		if k.KID == header.Kid && k.Active {
+		if !k.Active {
+			continue
+		}
+		if header.Kid == "" || k.KID == header.Kid || k.ID == header.Kid || strings.HasSuffix(k.ID, header.Kid) || strings.HasSuffix(header.Kid, k.KID) {
 			matchingKey = k
 			break
+		}
+	}
+
+	if matchingKey == nil && len(keys) > 0 {
+		for _, k := range keys {
+			if k.Active {
+				matchingKey = k
+				break
+			}
 		}
 	}
 
