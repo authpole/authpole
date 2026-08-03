@@ -1,3 +1,5 @@
+github.com/avivklas/jaydb v0.0.0-20260803124037-8a48a8404827 h1:Bfy6zGe/HFv3KVrEMHeF38z5KbD1DxjR7GTF0HcV4jU=
+github.com/avivklas/jaydb v0.0.0-20260803124037-8a48a8404827/go.mod h1:uu/pxfV7EuUDmxS1rGTUR3zYWCPzsXkHGvo3Z28XCIM=
 github.com/aws/aws-sdk-go-v2 v1.43.3 h1:XJIcfv8uDs2ukdQsoAC8/Ebu1ejxwzlayl2ZsiFns2A=
 github.com/aws/aws-sdk-go-v2 v1.43.3/go.mod h1:70vwSy16txshwG+g55WkpgPKDIByzHI8ccBsOteo3bQ=
 github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.16 h1:aiuaKlDweRC5qExJondpWjOgyzMHpofpwspGXUtwn4c=

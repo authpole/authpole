@@ -37,15 +37,19 @@ func main() {
 	var err error
 
 	if *s3Bucket != "" {
-		log.Printf("Connecting to production S3 bucket: %s", *s3Bucket)
-		store = storage.NewS3CASStorage(*s3Bucket, "us-east-1", *s3Endpoint)
+		log.Printf("Initializing JayDB S3 Embedded Storage (Bucket: %s)", *s3Bucket)
+		store, err = storage.NewS3Storage(*s3Bucket, "us-east-1", *s3Endpoint)
+	} else if *dataDir != "" {
+		log.Printf("Initializing JayDB FS Embedded Storage (Data directory: %s)", *dataDir)
+		store, err = storage.NewFSStorage(*dataDir)
 	} else {
-		log.Printf("Initializing S3 CAS Storage Emulator (Data directory: %s)", *dataDir)
-		store, err = storage.NewMemoryCASStorage(*dataDir)
-		if err != nil {
-			log.Fatalf("Failed to initialize storage: %v", err)
-		}
+		log.Printf("Initializing JayDB Memory Embedded Storage")
+		store, err = storage.NewMemoryStorage()
 	}
+	if err != nil {
+		log.Fatalf("Failed to initialize JayDB storage: %v", err)
+	}
+	defer store.Close()
 
 	memoryCache := cache.NewMemoryCache()
 

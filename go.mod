@@ -1,8 +1,9 @@
 module authpole
 
-go 1.24
+go 1.26.3
 
 require (
+	github.com/avivklas/jaydb v0.0.0-20260803124037-8a48a8404827
 	github.com/aws/aws-sdk-go-v2 v1.43.3
 	github.com/aws/aws-sdk-go-v2/config v1.32.34
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.3

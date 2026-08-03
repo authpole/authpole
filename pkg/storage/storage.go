@@ -29,6 +29,9 @@ type Storage interface {
 
 	// List returns all records matching a key prefix.
 	List(ctx context.Context, prefix string) ([]*models.StoredRecord, error)
+
+	// Close releases any resources used by the storage engine.
+	Close() error
 }
 
 // StorageKey helper functions to standardize object key formats in S3
