@@ -1,12 +1,12 @@
 # Multi-stage Dockerfile for Authpole Go Server
 
 # Stage 1: Build stage
-FROM golang:1.22-alpine AS builder
+FROM golang:alpine AS builder
 
 WORKDIR /build
 
 # Copy source code and module files
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY cmd/ ./cmd/
 COPY pkg/ ./pkg/
 
