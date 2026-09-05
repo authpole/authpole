@@ -306,19 +306,36 @@ func (e *IDPEngine) PrepareAuthorization(ctx context.Context, req AuthorizationR
 	e.mu.Unlock()
 
 	upstreamCallbackURL := fmt.Sprintf("%s/oauth/v2/callback", req.ServerBaseURL)
+
+	// Merge the provider record with its preset so a record that only supplies
+	// credentials still gets the well-known endpoints and scopes.
+	cfg := effectiveProvider(upstreamIDP)
+	if cfg.AuthorizeURL == "" {
+		return "", fmt.Errorf("identity provider %q has no authorize_url configured", upstreamIDP.ID)
+	}
+
 	scopesStr := "openid profile email"
-	if len(upstreamIDP.Scopes) > 0 {
-		scopesStr = strings.Join(upstreamIDP.Scopes, " ")
+	if len(cfg.Scopes) > 0 {
+		scopesStr = strings.Join(cfg.Scopes, " ")
 	}
 
 	v := url.Values{}
-	v.Set("client_id", upstreamIDP.ClientID)
+	v.Set("client_id", cfg.ClientID)
 	v.Set("redirect_uri", upstreamCallbackURL)
 	v.Set("response_type", "code")
 	v.Set("scope", scopesStr)
 	v.Set("state", stateID)
+	for key, value := range cfg.ExtraAuthParams {
+		// Never let provider-specific extras overwrite the protocol parameters that
+		// carry our own state and redirect.
+		switch key {
+		case "client_id", "redirect_uri", "response_type", "state":
+			continue
+		}
+		v.Set(key, value)
+	}
 
-	redirectTarget := fmt.Sprintf("%s?%s", upstreamIDP.AuthorizeURL, v.Encode())
+	redirectTarget := fmt.Sprintf("%s?%s", cfg.AuthorizeURL, v.Encode())
 	return redirectTarget, nil
 }
 
@@ -408,15 +425,22 @@ func (e *IDPEngine) ProcessUpstreamCallback(ctx context.Context, serverBaseURL, 
 
 	upstreamCallbackURL := fmt.Sprintf("%s/oauth/v2/callback", serverBaseURL)
 
-	// Step 1: Exchange code for access token at upstream IDP token endpoint
+	// Step 1: Exchange code for access token at upstream IDP token endpoint. Use the
+	// preset-merged config so a provider record carrying only credentials still
+	// resolves its well-known token endpoint.
+	upstreamCfg := effectiveProvider(upstreamIDP)
+	if upstreamCfg.TokenURL == "" {
+		return "", fmt.Errorf("identity provider %q has no token_url configured", upstreamIDP.ID)
+	}
+
 	v := url.Values{}
 	v.Set("code", code)
-	v.Set("client_id", upstreamIDP.ClientID)
-	v.Set("client_secret", upstreamIDP.ClientSecret)
+	v.Set("client_id", upstreamCfg.ClientID)
+	v.Set("client_secret", upstreamCfg.ClientSecret)
 	v.Set("redirect_uri", upstreamCallbackURL)
 	v.Set("grant_type", "authorization_code")
 
-	req, err := http.NewRequestWithContext(ctx, "POST", upstreamIDP.TokenURL, strings.NewReader(v.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", upstreamCfg.TokenURL, strings.NewReader(v.Encode()))
 	if err != nil {
 		return "", fmt.Errorf("failed to create token request: %w", err)
 	}
@@ -452,93 +476,13 @@ func (e *IDPEngine) ProcessUpstreamCallback(ctx context.Context, serverBaseURL, 
 		return "", fmt.Errorf("upstream IDP did not return an access token")
 	}
 
-	// Step 2: Fetch user profile info
-	claims := &models.AuthClaims{
-		OriginalIDP: upstreamIDP.ID,
-		Roles:       []string{"user"},
-	}
-
-	if upstreamIDP.ID == "google" {
-		userReq, _ := http.NewRequestWithContext(ctx, "GET", "https://openidconnect.googleapis.com/v1/userinfo", nil)
-		userReq.Header.Set("Authorization", "Bearer "+tokenResp.AccessToken)
-		userResp, err := client.Do(userReq)
-		if err != nil {
-			return "", fmt.Errorf("failed to fetch Google user profile: %w", err)
-		}
-		defer userResp.Body.Close()
-		userBytes, _ := io.ReadAll(userResp.Body)
-
-		var gUser struct {
-			Sub   string `json:"sub"`
-			Name  string `json:"name"`
-			Email string `json:"email"`
-		}
-		_ = json.Unmarshal(userBytes, &gUser)
-
-		claims.Subject = fmt.Sprintf("google_%s", gUser.Sub)
-		claims.Email = gUser.Email
-		claims.Name = gUser.Name
-		if claims.Name == "" {
-			claims.Name = gUser.Email
-		}
-	} else if upstreamIDP.ID == "github" {
-		userReq, _ := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/user", nil)
-		userReq.Header.Set("Authorization", "Bearer "+tokenResp.AccessToken)
-		userReq.Header.Set("User-Agent", "AuthPole-Mediator")
-		userResp, err := client.Do(userReq)
-		if err != nil {
-			return "", fmt.Errorf("failed to fetch GitHub user profile: %w", err)
-		}
-		defer userResp.Body.Close()
-		userBytes, _ := io.ReadAll(userResp.Body)
-
-		var ghUser struct {
-			ID    interface{} `json:"id"`
-			Login string      `json:"login"`
-			Name  string      `json:"name"`
-			Email string      `json:"email"`
-		}
-		_ = json.Unmarshal(userBytes, &ghUser)
-
-		claims.Subject = fmt.Sprintf("github_%v", ghUser.ID)
-		claims.Name = ghUser.Name
-		if claims.Name == "" {
-			claims.Name = ghUser.Login
-		}
-		claims.Email = ghUser.Email
-
-		// If email is private/empty, fetch user emails list
-		if claims.Email == "" {
-			emailsReq, _ := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/user/emails", nil)
-			emailsReq.Header.Set("Authorization", "Bearer "+tokenResp.AccessToken)
-			emailsReq.Header.Set("User-Agent", "AuthPole-Mediator")
-			emailsResp, err := client.Do(emailsReq)
-			if err == nil {
-				defer emailsResp.Body.Close()
-				emailsBytes, _ := io.ReadAll(emailsResp.Body)
-				var emailList []struct {
-					Email    string `json:"email"`
-					Primary  bool   `json:"primary"`
-					Verified bool   `json:"verified"`
-				}
-				if err := json.Unmarshal(emailsBytes, &emailList); err == nil {
-					for _, em := range emailList {
-						if em.Primary && em.Verified {
-							claims.Email = em.Email
-							break
-						}
-					}
-					if claims.Email == "" && len(emailList) > 0 {
-						claims.Email = emailList[0].Email
-					}
-				}
-			}
-		}
-	} else {
-		// Generic fallback
-		claims.Subject = fmt.Sprintf("%s_user", upstreamIDP.ID)
-		claims.Email = fmt.Sprintf("user@%s.com", upstreamIDP.ID)
-		claims.Name = fmt.Sprintf("Authenticated %s User", upstreamIDP.ID)
+	// Step 2: Fetch and normalize the user profile through the provider's own
+	// configuration. Every provider - preset or tenant-registered - goes through the
+	// same path, so a tenant's own OIDC/OAuth2 provider is a first-class citizen
+	// rather than falling into a stub that fabricated an identity.
+	claims, err := e.fetchUpstreamClaims(ctx, client, upstreamIDP, tokenResp.AccessToken)
+	if err != nil {
+		return "", err
 	}
 
 	return e.CompleteUpstreamAuthenticationWithState(ctx, state, claims)
@@ -1071,41 +1015,37 @@ func (e *IDPEngine) resolveUpstreamIDP(ctx context.Context, orgID, clientID, idp
 		return c == "" || strings.HasPrefix(c, "google_oauth_client_id") || strings.HasPrefix(c, "github_oauth_client_id") || c == "authpole_proxy"
 	}
 
+	// decodeUsable returns the stored provider if it is enabled and configured.
+	//
+	// It deliberately does NOT rewrite AuthorizeURL/TokenURL for records whose ID
+	// happens to be "google" or "github". Doing so meant naming a provider "github"
+	// silently forced it at github.com, so a tenant could not point that record at
+	// GitHub Enterprise or any self-hosted deployment - its stored configuration was
+	// accepted and then discarded. Defaults now come from effectiveProvider, which
+	// only fills fields the record left empty.
+	decodeUsable := func(data []byte) (*models.IdentityProvider, bool) {
+		var provider models.IdentityProvider
+		if err := json.Unmarshal(data, &provider); err != nil {
+			return nil, false
+		}
+		if !provider.Enabled || isPlaceholder(provider.ClientID) {
+			return nil, false
+		}
+		return &provider, true
+	}
+
 	// 1. Try organization-specific storage
-	idpKey := storage.IDPKey(orgID, idpID)
-	rec, err := e.storage.Get(ctx, idpKey)
-	if err == nil {
-		var idp models.IdentityProvider
-		if err := json.Unmarshal(rec.Data, &idp); err == nil && idp.Enabled && !isPlaceholder(idp.ClientID) {
-			if idp.ID == "google" {
-				idp.Type = "oidc"
-				idp.AuthorizeURL = "https://accounts.google.com/o/oauth2/v2/auth"
-				idp.TokenURL = "https://oauth2.googleapis.com/token"
-			} else if idp.ID == "github" {
-				idp.Type = "oauth2"
-				idp.AuthorizeURL = "https://github.com/login/oauth/authorize"
-				idp.TokenURL = "https://github.com/login/oauth/access_token"
-			}
-			return &idp, nil
+	if rec, err := e.storage.Get(ctx, storage.IDPKey(orgID, idpID)); err == nil {
+		if provider, ok := decodeUsable(rec.Data); ok {
+			return provider, nil
 		}
 	}
 
 	// 2. Fall back to default organization storage
 	if orgID != "default" {
-		defaultKey := storage.IDPKey("default", idpID)
-		if recDefault, err := e.storage.Get(ctx, defaultKey); err == nil {
-			var idp models.IdentityProvider
-			if err := json.Unmarshal(recDefault.Data, &idp); err == nil && idp.Enabled && !isPlaceholder(idp.ClientID) {
-				if idp.ID == "google" {
-					idp.Type = "oidc"
-					idp.AuthorizeURL = "https://accounts.google.com/o/oauth2/v2/auth"
-					idp.TokenURL = "https://oauth2.googleapis.com/token"
-				} else if idp.ID == "github" {
-					idp.Type = "oauth2"
-					idp.AuthorizeURL = "https://github.com/login/oauth/authorize"
-					idp.TokenURL = "https://github.com/login/oauth/access_token"
-				}
-				return &idp, nil
+		if rec, err := e.storage.Get(ctx, storage.IDPKey("default", idpID)); err == nil {
+			if provider, ok := decodeUsable(rec.Data); ok {
+				return provider, nil
 			}
 		}
 	}
