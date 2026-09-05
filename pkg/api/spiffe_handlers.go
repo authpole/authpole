@@ -47,25 +47,26 @@ func (h *SPIFFEHandler) IssueSVID(w http.ResponseWriter, r *http.Request) {
 		orgID = "default"
 	}
 
-	// Extract long-expiry client certificate from HTTP header or body
-	clientCertPEM := r.Header.Get("X-SPIFFE-Client-Cert")
-	if clientCertPEM == "" {
-		clientCertPEM = r.Header.Get("X-Client-Cert")
+	// Obtain a certificate whose private key the caller has PROVEN possession of.
+	//
+	// This deliberately ignores any certificate in the request body or in an
+	// untrusted header. A certificate is public data, so accepting one as a
+	// credential let anybody who had ever seen it impersonate the workload
+	// indefinitely - no better than the long-lived bearer key SPIFFE replaces.
+	clientCert, err := spiffe.VerifiedClientCert(r)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"mtls_required","message":"%s"}`, err.Error()), http.StatusUnauthorized)
+		return
 	}
 
 	var reqBody struct {
 		WorkloadID      string   `json:"workload_id"`
-		ClientCertPEM   string   `json:"client_cert_pem"`
 		Audience        string   `json:"audience"`
 		RequestedScopes []string `json:"requested_scopes"`
 	}
 
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&reqBody)
-	}
-
-	if clientCertPEM == "" {
-		clientCertPEM = reqBody.ClientCertPEM
 	}
 
 	workloadID := reqBody.WorkloadID
@@ -91,12 +92,12 @@ func (h *SPIFFEHandler) IssueSVID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate long-expiry client certificate if configured
-	if clientCertPEM != "" || workload.CertFingerprint != "" {
-		if err := spiffe.ValidateLongExpiryCert(clientCertPEM, &workload); err != nil {
-			http.Error(w, fmt.Sprintf(`{"error":"invalid_client_certificate","message":"%s"}`, err.Error()), http.StatusUnauthorized)
-			return
-		}
+	// Bind the proven certificate to this workload. Always enforced: a workload with
+	// no registered fingerprint is now refused rather than authenticating anyone who
+	// knows its ID.
+	if err := spiffe.ValidateWorkloadCert(clientCert, &workload); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"invalid_client_certificate","message":"%s"}`, err.Error()), http.StatusUnauthorized)
+		return
 	}
 
 	// Validate requested scopes against workload's allowed scopes
