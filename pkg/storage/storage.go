@@ -1,10 +1,10 @@
 package storage
 
 import (
-	"github.com/authpole/authpole/pkg/models"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/authpole/authpole/pkg/models"
 )
 
 var (
