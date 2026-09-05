@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"authpole/pkg/storage"
+	"github.com/authpole/authpole/pkg/storage"
 )
 
 func TestJayDBMemoryStorage(t *testing.T) {

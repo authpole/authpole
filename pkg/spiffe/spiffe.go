@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"authpole/pkg/crypto"
-	"authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/crypto"
+	"github.com/authpole/authpole/pkg/models"
 )
 
 var (

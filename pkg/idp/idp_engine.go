@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"authpole/pkg/cache"
-	"authpole/pkg/crypto"
-	"authpole/pkg/models"
-	"authpole/pkg/storage"
+	"github.com/authpole/authpole/pkg/cache"
+	"github.com/authpole/authpole/pkg/crypto"
+	"github.com/authpole/authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/storage"
 )
 
 // pkceMethodS256 is the only PKCE transformation this server accepts. RFC 7636

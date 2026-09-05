@@ -6,8 +6,8 @@ import (
 	"log"
 	"net/http"
 
-	"authpole/pkg/crypto"
-	"authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/crypto"
+	"github.com/authpole/authpole/pkg/models"
 )
 
 // DownstreamService demonstrates how a microservice validates Auth Pole JWTs offline using downloaded JWKS.

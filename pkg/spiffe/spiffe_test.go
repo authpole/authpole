@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"authpole/pkg/crypto"
-	"authpole/pkg/models"
-	"authpole/pkg/spiffe"
+	"github.com/authpole/authpole/pkg/crypto"
+	"github.com/authpole/authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/spiffe"
 )
 
 func TestSPIFFEIDParsing(t *testing.T) {

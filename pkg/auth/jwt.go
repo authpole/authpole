@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"authpole/pkg/cache"
-	"authpole/pkg/crypto"
-	"authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/cache"
+	"github.com/authpole/authpole/pkg/crypto"
+	"github.com/authpole/authpole/pkg/models"
 )
 
 type contextKey string
