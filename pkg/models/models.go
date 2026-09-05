@@ -163,23 +163,61 @@ func (a *Application) TokenAudiences() Audience {
 	return nil
 }
 
+// ClaimMapping tells Auth Pole which fields of an upstream provider's profile
+// response carry which normalized claim.
+//
+// This exists so a tenant can register an arbitrary OIDC/OAuth2 provider and have
+// its identity understood, instead of only the providers that were hardcoded into
+// the callback. Each value is a field name in the provider's JSON response; dotted
+// paths ("data.id") walk nested objects.
+type ClaimMapping struct {
+	// Subject is the provider's stable, immutable user identifier. This is the one
+	// field that MUST resolve: it is what an account is keyed on, and a provider
+	// whose subject cannot be read must be rejected rather than guessed at.
+	Subject string `json:"subject,omitempty"`
+	Email   string `json:"email,omitempty"`
+	// EmailVerified names a boolean field. When the provider reports the address as
+	// unverified, the login is refused: an unverified address from a provider that
+	// lets users type anything is an account-takeover vector against a tenant that
+	// matches users by email.
+	EmailVerified string `json:"email_verified,omitempty"`
+	Name          string `json:"name,omitempty"`
+	Username      string `json:"username,omitempty"`
+	Groups        string `json:"groups,omitempty"`
+	Roles         string `json:"roles,omitempty"`
+}
+
 // IdentityProvider represents an upstream federated IDP (e.g., Google, GitHub, Okta, OIDC/OAuth2/SAML provider).
 type IdentityProvider struct {
-	ID             string    `json:"id"`
-	OrganizationID string    `json:"organization_id"`
-	Name           string    `json:"name"`
-	Type           string    `json:"type"` // "oidc", "oauth2", "saml", "mock"
-	IssuerURL      string    `json:"issuer_url,omitempty"`
-	ClientID       string    `json:"client_id"`
-	ClientSecret   string    `json:"client_secret"`
-	AuthorizeURL   string    `json:"authorize_url"`
-	TokenURL       string    `json:"token_url"`
-	UserInfoURL    string    `json:"user_info_url,omitempty"`
-	Scopes         []string  `json:"scopes"`
-	Enabled        bool      `json:"enabled"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Version        string    `json:"version"` // CAS version
+	ID             string `json:"id"`
+	OrganizationID string `json:"organization_id"`
+	Name           string `json:"name"`
+	Type           string `json:"type"` // "oidc", "oauth2", "saml", "mock"
+	IssuerURL      string `json:"issuer_url,omitempty"`
+	ClientID       string `json:"client_id"`
+	ClientSecret   string `json:"client_secret"`
+	AuthorizeURL   string `json:"authorize_url"`
+	TokenURL       string `json:"token_url"`
+	UserInfoURL    string `json:"user_info_url,omitempty"`
+	// EmailsURL is an optional secondary endpoint for providers that keep the
+	// address out of the main profile response (GitHub does this when the user
+	// marks it private).
+	EmailsURL string `json:"emails_url,omitempty"`
+	// Preset names a built-in defaults bundle ("google", "github", "microsoft",
+	// "facebook", "instagram"). Explicit fields on this record always win, so a
+	// preset is a convenience, never an override.
+	Preset string `json:"preset,omitempty"`
+	// ClaimMapping maps the provider's profile response onto normalized claims.
+	ClaimMapping ClaimMapping `json:"claim_mapping,omitempty"`
+	// ExtraAuthParams are appended to the upstream authorize URL. Some providers
+	// need provider-specific parameters (Microsoft tenant hints, Facebook's
+	// auth_type) that are not part of OAuth2 itself.
+	ExtraAuthParams map[string]string `json:"extra_auth_params,omitempty"`
+	Scopes          []string          `json:"scopes"`
+	Enabled         bool              `json:"enabled"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+	Version         string            `json:"version"` // CAS version
 }
 
 // SigningKey represents asymmetric key pair used for signing Auth Pole JWT tokens per organization/app.
@@ -305,13 +343,18 @@ type AuthClaims struct {
 	SPIFFEID       string   `json:"spiffe_id,omitempty"`
 	Scope          string   `json:"scope,omitempty"`
 	OriginalIDP    string   `json:"original_idp,omitempty"`
-	Email          string   `json:"email,omitempty"`
-	Name           string   `json:"name,omitempty"`
-	PreferredUser  string   `json:"preferred_username,omitempty"`
-	Roles          []string `json:"roles,omitempty"`
-	Groups         []string `json:"groups,omitempty"`
-	IssuedAt       int64    `json:"iat"`
-	NotBefore      int64    `json:"nbf,omitempty"`
-	ExpiresAt      int64    `json:"exp"`
-	Nonce          string   `json:"nonce,omitempty"`
+	// UpstreamSubject is the provider's own subject value, unnamespaced. Subject
+	// carries the namespaced "<idp>_<subject>" form; this keeps the raw half so a
+	// host application can key accounts on the (provider, subject) tuple without
+	// having to parse it back out.
+	UpstreamSubject string   `json:"upstream_subject,omitempty"`
+	Email           string   `json:"email,omitempty"`
+	Name            string   `json:"name,omitempty"`
+	PreferredUser   string   `json:"preferred_username,omitempty"`
+	Roles           []string `json:"roles,omitempty"`
+	Groups          []string `json:"groups,omitempty"`
+	IssuedAt        int64    `json:"iat"`
+	NotBefore       int64    `json:"nbf,omitempty"`
+	ExpiresAt       int64    `json:"exp"`
+	Nonce           string   `json:"nonce,omitempty"`
 }
