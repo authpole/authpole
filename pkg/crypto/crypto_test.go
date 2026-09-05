@@ -35,7 +35,7 @@ func TestCryptoJWTAndJWKS(t *testing.T) {
 	claims := &models.AuthClaims{
 		Subject:        "user_123",
 		Issuer:         "https://authpole.io/organizations/" + orgID,
-		Audience:       appID,
+		Audience:       models.Audience{appID},
 		OrganizationID: orgID,
 		AppID:          appID,
 		OriginalIDP:    "google",
