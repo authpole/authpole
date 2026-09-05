@@ -63,7 +63,7 @@ func TestJWTSVIDIssuance(t *testing.T) {
 	claims := &models.AuthClaims{
 		Subject:        spiffeID,
 		Issuer:         "https://authpole.io/organizations/" + orgID,
-		Audience:       "spiffe://authpole.local/ns/default",
+		Audience:       models.Audience{"spiffe://authpole.local/ns/default"},
 		OrganizationID: orgID,
 		WorkloadID:     workloadID,
 		SPIFFEID:       spiffeID,

@@ -1,10 +1,10 @@
 package storage
 
 import (
+	"authpole/pkg/models"
 	"context"
 	"errors"
 	"fmt"
-	"authpole/pkg/models"
 )
 
 var (
@@ -13,6 +13,15 @@ var (
 	// ErrNotFound is returned when an object key does not exist.
 	ErrNotFound = errors.New("object not found")
 )
+
+// MatchAnyVersion is passed as expectedVersion to make a Put create-only: the
+// write succeeds only if the key does not already exist (S3 If-None-Match: *),
+// and returns ErrVersionMismatch otherwise.
+//
+// This is the primitive that lets several nodes race to create the same record
+// and have exactly one win, which matters for anything where a second copy would
+// be actively wrong - a tenant's signing key, for example.
+const MatchAnyVersion = "*"
 
 // Storage defines the interface for S3 object persistence with Compare-And-Swap (CAS) logic.
 type Storage interface {
@@ -75,3 +84,11 @@ func AuthCodeKey(code string) string {
 	return fmt.Sprintf("sessions/codes/%s.json", code)
 }
 
+// RefreshTokenKey locates a persisted refresh-token handle.
+//
+// Refresh tokens are stored server-side rather than being self-contained JWTs so
+// that they can be revoked and so that rotation is enforceable: consumption is a
+// CAS delete, which makes a second presentation of the same handle fail.
+func RefreshTokenKey(handle string) string {
+	return fmt.Sprintf("sessions/refresh/%s.json", handle)
+}
