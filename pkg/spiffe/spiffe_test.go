@@ -36,6 +36,11 @@ func TestLongExpiryCertValidation(t *testing.T) {
 		t.Fatalf("GenerateSelfSignedLongExpiryCert failed: %v", err)
 	}
 
+	cert, err := spiffe.ParseCertPEM(certPEM)
+	if err != nil {
+		t.Fatalf("ParseCertPEM failed: %v", err)
+	}
+
 	workload := &models.SPIFFEWorkload{
 		ID:              "payment_service",
 		OrganizationID:  "default",
@@ -45,8 +50,95 @@ func TestLongExpiryCertValidation(t *testing.T) {
 		Active:          true,
 	}
 
-	if err := spiffe.ValidateLongExpiryCert(certPEM, workload); err != nil {
-		t.Fatalf("ValidateLongExpiryCert failed: %v", err)
+	if err := spiffe.ValidateWorkloadCert(cert, workload); err != nil {
+		t.Fatalf("ValidateWorkloadCert failed: %v", err)
+	}
+}
+
+// TestWorkloadWithoutFingerprintIsRefused covers the removed bypass: validation
+// used to be skipped entirely when neither a certificate nor a stored fingerprint
+// was present, so a workload registered without one issued SVIDs to any caller who
+// knew its ID.
+func TestWorkloadWithoutFingerprintIsRefused(t *testing.T) {
+	spiffeID := "spiffe://authpole.local/ns/default/sa/payment-service"
+	certPEM, _, _, err := spiffe.GenerateSelfSignedLongExpiryCert(spiffeID, 5)
+	if err != nil {
+		t.Fatalf("cert generation failed: %v", err)
+	}
+	cert, err := spiffe.ParseCertPEM(certPEM)
+	if err != nil {
+		t.Fatalf("ParseCertPEM failed: %v", err)
+	}
+
+	workload := &models.SPIFFEWorkload{
+		ID:             "payment_service",
+		OrganizationID: "default",
+		SPIFFEID:       spiffeID,
+		Active:         true,
+		// CertFingerprint deliberately empty.
+	}
+
+	if err := spiffe.ValidateWorkloadCert(cert, workload); err == nil {
+		t.Fatal("a workload with no registered fingerprint must not authenticate anyone")
+	}
+}
+
+// TestForeignCertIsRejected confirms a valid certificate for a different workload
+// cannot be used to obtain this workload's identity.
+func TestForeignCertIsRejected(t *testing.T) {
+	ourID := "spiffe://authpole.local/ns/default/sa/payment-service"
+	_, _, ourFingerprint, err := spiffe.GenerateSelfSignedLongExpiryCert(ourID, 5)
+	if err != nil {
+		t.Fatalf("cert generation failed: %v", err)
+	}
+
+	foreignPEM, _, _, err := spiffe.GenerateSelfSignedLongExpiryCert(
+		"spiffe://authpole.local/ns/default/sa/attacker", 5)
+	if err != nil {
+		t.Fatalf("cert generation failed: %v", err)
+	}
+	foreign, err := spiffe.ParseCertPEM(foreignPEM)
+	if err != nil {
+		t.Fatalf("ParseCertPEM failed: %v", err)
+	}
+
+	workload := &models.SPIFFEWorkload{
+		ID:              "payment_service",
+		OrganizationID:  "default",
+		SPIFFEID:        ourID,
+		CertFingerprint: ourFingerprint,
+		Active:          true,
+	}
+
+	if err := spiffe.ValidateWorkloadCert(foreign, workload); err == nil {
+		t.Fatal("a certificate for another workload must be rejected")
+	}
+}
+
+// TestSPIFFEIDMustAppearAsURISAN covers the case where a certificate carries no
+// URI SANs at all, which previously skipped the SPIFFE ID check.
+func TestSPIFFEIDMustAppearAsURISAN(t *testing.T) {
+	otherID := "spiffe://authpole.local/ns/default/sa/other"
+	certPEM, _, fingerprint, err := spiffe.GenerateSelfSignedLongExpiryCert(otherID, 5)
+	if err != nil {
+		t.Fatalf("cert generation failed: %v", err)
+	}
+	cert, err := spiffe.ParseCertPEM(certPEM)
+	if err != nil {
+		t.Fatalf("ParseCertPEM failed: %v", err)
+	}
+
+	// Fingerprint matches, but the certificate asserts a different SPIFFE ID.
+	workload := &models.SPIFFEWorkload{
+		ID:              "payment_service",
+		OrganizationID:  "default",
+		SPIFFEID:        "spiffe://authpole.local/ns/default/sa/payment-service",
+		CertFingerprint: fingerprint,
+		Active:          true,
+	}
+
+	if err := spiffe.ValidateWorkloadCert(cert, workload); err == nil {
+		t.Fatal("a certificate that does not assert the workload's SPIFFE ID must be rejected")
 	}
 }
 
