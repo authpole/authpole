@@ -1,4 +1,4 @@
-module authpole
+module github.com/authpole/authpole
 
 go 1.26.3
 

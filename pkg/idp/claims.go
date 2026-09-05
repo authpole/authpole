@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/models"
 )
 
 // Preset holds sensible defaults for a well-known upstream provider.

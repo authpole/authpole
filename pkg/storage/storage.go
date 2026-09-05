@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/models"
 	"context"
 	"errors"
 	"fmt"

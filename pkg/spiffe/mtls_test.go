@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"testing"
 
-	"authpole/pkg/spiffe"
+	"github.com/authpole/authpole/pkg/spiffe"
 )
 
 func testCert(t *testing.T, spiffeID string) (*x509.Certificate, string) {

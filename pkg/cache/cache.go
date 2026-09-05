@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/models"
 )
 
 type CacheItem struct {

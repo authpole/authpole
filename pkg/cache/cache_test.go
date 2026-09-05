@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"authpole/pkg/cache"
-	"authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/cache"
+	"github.com/authpole/authpole/pkg/models"
 )
 
 func TestShardsAndCache(t *testing.T) {

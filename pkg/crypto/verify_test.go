@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"authpole/pkg/crypto"
-	"authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/crypto"
+	"github.com/authpole/authpole/pkg/models"
 )
 
 func TestAudienceAcceptsStringAndArray(t *testing.T) {

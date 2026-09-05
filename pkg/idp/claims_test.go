@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"authpole/pkg/cache"
-	"authpole/pkg/crypto"
-	"authpole/pkg/idp"
-	"authpole/pkg/models"
-	"authpole/pkg/storage"
+	"github.com/authpole/authpole/pkg/cache"
+	"github.com/authpole/authpole/pkg/crypto"
+	"github.com/authpole/authpole/pkg/idp"
+	"github.com/authpole/authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/storage"
 )
 
 // upstream stands in for a tenant-registered OAuth2/OIDC provider.
