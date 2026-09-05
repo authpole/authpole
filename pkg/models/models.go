@@ -1,8 +1,75 @@
 package models
 
 import (
+	"encoding/json"
+	"fmt"
 	"time"
 )
+
+// Token use values carried in the `token_use` claim. An ID token and an access
+// token must never be interchangeable: an ID token describes *who the user is*
+// to the client that requested the login, while an access token authorizes calls
+// against a resource server. Minting them as the same bytes lets a client replay
+// an identity assertion as an authorization grant, so every issued token is
+// stamped and every verifier is expected to demand the use it needs.
+const (
+	TokenUseAccess  = "access"
+	TokenUseID      = "id"
+	TokenUseRefresh = "refresh"
+)
+
+// Audience models the JWT `aud` claim. RFC 7519 §4.1.3 allows either a single
+// string or an array of strings, and tokens in the wild use both, so this type
+// accepts either on the wire and re-marshals a single element as a bare string
+// for compatibility with verifiers that only understand that form.
+type Audience []string
+
+// MarshalJSON emits a lone audience as a string and multiple as an array.
+func (a Audience) MarshalJSON() ([]byte, error) {
+	switch len(a) {
+	case 0:
+		return []byte(`""`), nil
+	case 1:
+		return json.Marshal(a[0])
+	default:
+		return json.Marshal([]string(a))
+	}
+}
+
+// UnmarshalJSON accepts either the string or the array form of `aud`.
+func (a *Audience) UnmarshalJSON(data []byte) error {
+	var single string
+	if err := json.Unmarshal(data, &single); err == nil {
+		if single == "" {
+			*a = nil
+			return nil
+		}
+		*a = Audience{single}
+		return nil
+	}
+
+	var multi []string
+	if err := json.Unmarshal(data, &multi); err != nil {
+		return fmt.Errorf("aud claim must be a string or an array of strings: %w", err)
+	}
+	*a = Audience(multi)
+	return nil
+}
+
+// Contains reports whether want is one of the audiences. An empty want never
+// matches, so a verifier that forgot to configure its audience fails closed
+// instead of accepting every token.
+func (a Audience) Contains(want string) bool {
+	if want == "" {
+		return false
+	}
+	for _, aud := range a {
+		if aud == want {
+			return true
+		}
+	}
+	return false
+}
 
 // Organization represents a multi-tenant isolation unit in Auth Pole.
 type Organization struct {
@@ -17,17 +84,83 @@ type Organization struct {
 
 // Application represents a Relying Party / Service Provider app registered in Auth Pole.
 type Application struct {
-	ID             string    `json:"id"`
-	OrganizationID string    `json:"organization_id"`
-	Name           string    `json:"name"`
-	ClientID       string    `json:"client_id"`
-	ClientSecret   string    `json:"client_secret"`
-	RedirectURIs   []string  `json:"redirect_uris"`
-	AllowedIDPs    []string  `json:"allowed_idps"` // Upstream IDP IDs enabled for this app
-	Scopes         []string  `json:"scopes"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Version        string    `json:"version"` // CAS version
+	ID             string   `json:"id"`
+	OrganizationID string   `json:"organization_id"`
+	Name           string   `json:"name"`
+	ClientID       string   `json:"client_id"`
+	ClientSecret   string   `json:"client_secret"`
+	RedirectURIs   []string `json:"redirect_uris"`
+	AllowedIDPs    []string `json:"allowed_idps"` // Upstream IDP IDs enabled for this app
+	Scopes         []string `json:"scopes"`
+	// Public marks a client that cannot hold a secret - a browser SPA or a mobile
+	// app, where any embedded secret ships to the user. Public clients authenticate
+	// their token request with PKCE instead of a secret, and must never be allowed
+	// to fall back to secret-based authentication.
+	Public bool `json:"public"`
+	// AllowedOrigins lists the web origins permitted to call the token endpoint
+	// with CORS. A public client's token request comes from a browser, so the
+	// endpoint cannot be wildcard-open without letting any site drive a redemption.
+	AllowedOrigins []string `json:"allowed_origins,omitempty"`
+	// Audiences lists the resource servers tokens for this app may be minted for.
+	// Empty means the client's own ID is the only audience.
+	Audiences []string  `json:"audiences,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Version   string    `json:"version"` // CAS version
+}
+
+// IsPublicClient reports whether the app must use PKCE instead of a client secret.
+// An app with no registered secret is treated as public even when the flag was not
+// set, so a half-configured record fails safe (PKCE required) rather than open
+// (neither a secret nor a challenge demanded).
+func (a *Application) IsPublicClient() bool {
+	if a == nil {
+		return false
+	}
+	return a.Public || a.ClientSecret == ""
+}
+
+// HasRedirectURI reports whether uri exactly matches a registered redirect URI.
+// Matching is exact by design: prefix or wildcard matching on a redirect target is
+// how authorization codes end up delivered to attacker-controlled endpoints.
+func (a *Application) HasRedirectURI(uri string) bool {
+	if a == nil || uri == "" {
+		return false
+	}
+	for _, registered := range a.RedirectURIs {
+		if registered == uri {
+			return true
+		}
+	}
+	return false
+}
+
+// HasAllowedOrigin reports whether origin may call the token endpoint via CORS.
+func (a *Application) HasAllowedOrigin(origin string) bool {
+	if a == nil || origin == "" {
+		return false
+	}
+	for _, allowed := range a.AllowedOrigins {
+		if allowed == origin {
+			return true
+		}
+	}
+	return false
+}
+
+// TokenAudiences returns the audiences to stamp into an access token for this app,
+// defaulting to the client's own identifier.
+func (a *Application) TokenAudiences() Audience {
+	if a == nil {
+		return nil
+	}
+	if len(a.Audiences) > 0 {
+		return Audience(a.Audiences)
+	}
+	if a.ClientID != "" {
+		return Audience{a.ClientID}
+	}
+	return nil
 }
 
 // IdentityProvider represents an upstream federated IDP (e.g., Google, GitHub, Okta, OIDC/OAuth2/SAML provider).
@@ -61,6 +194,27 @@ type SigningKey struct {
 	Active         bool      `json:"active"`
 	CreatedAt      time.Time `json:"created_at"`
 	Version        string    `json:"version"` // CAS version
+}
+
+// ActiveSigningKey picks the key to sign new tokens with: the newest active key
+// that still holds a private key.
+//
+// Selection is deterministic on purpose. Picking an arbitrary map/slice element
+// means two nodes can sign with two different keys during a rotation, and a
+// verifier that fetched JWKS a moment earlier rejects half the traffic. Newest
+// wins so that publishing a new key rotates signing forward while the previous
+// key stays in JWKS to verify tokens already in flight.
+func ActiveSigningKey(keys []*SigningKey) *SigningKey {
+	var chosen *SigningKey
+	for _, k := range keys {
+		if k == nil || !k.Active || k.PrivateKeyPEM == "" {
+			continue
+		}
+		if chosen == nil || k.CreatedAt.After(chosen.CreatedAt) {
+			chosen = k
+		}
+	}
+	return chosen
 }
 
 // AdminUser represents a console administrator with assigned roles and teams.
@@ -142,7 +296,9 @@ type StoredRecord struct {
 type AuthClaims struct {
 	Subject        string   `json:"sub"`
 	Issuer         string   `json:"iss"`
-	Audience       string   `json:"aud"`
+	Audience       Audience `json:"aud"`
+	TokenUse       string   `json:"token_use,omitempty"`
+	JTI            string   `json:"jti,omitempty"`
 	OrganizationID string   `json:"organization_id"`
 	AppID          string   `json:"app_id,omitempty"`
 	WorkloadID     string   `json:"workload_id,omitempty"`
@@ -155,6 +311,7 @@ type AuthClaims struct {
 	Roles          []string `json:"roles,omitempty"`
 	Groups         []string `json:"groups,omitempty"`
 	IssuedAt       int64    `json:"iat"`
+	NotBefore      int64    `json:"nbf,omitempty"`
 	ExpiresAt      int64    `json:"exp"`
 	Nonce          string   `json:"nonce,omitempty"`
 }
