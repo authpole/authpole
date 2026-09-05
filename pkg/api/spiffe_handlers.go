@@ -155,7 +155,7 @@ func (h *SPIFFEHandler) IssueSVID(w http.ResponseWriter, r *http.Request) {
 	claims := &models.AuthClaims{
 		Subject:        spiffeID,
 		Issuer:         fmt.Sprintf("https://authpole.io/organizations/%s", orgID),
-		Audience:       audience,
+		Audience:       models.Audience{audience},
 		OrganizationID: orgID,
 		WorkloadID:     workload.ID,
 		SPIFFEID:       spiffeID,

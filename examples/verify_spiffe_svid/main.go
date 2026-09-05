@@ -64,7 +64,7 @@ func main() {
 		claims := &models.AuthClaims{
 			Subject:        spiffeID,
 			Issuer:         "https://authpole.io/organizations/default",
-			Audience:       "spiffe://authpole.local/ns/default",
+			Audience:       models.Audience{"spiffe://authpole.local/ns/default"},
 			OrganizationID: "default",
 			WorkloadID:     "payment_service",
 			SPIFFEID:       spiffeID,

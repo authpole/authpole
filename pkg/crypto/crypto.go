@@ -20,11 +20,53 @@ import (
 )
 
 var (
-	ErrInvalidToken     = errors.New("invalid token signature or format")
-	ErrTokenExpired     = errors.New("token has expired")
-	ErrKeyNotFound      = errors.New("matching signing key not found")
-	ErrUnsupportedAlgo  = errors.New("unsupported signing algorithm")
+	ErrInvalidToken    = errors.New("invalid token signature or format")
+	ErrTokenExpired    = errors.New("token has expired")
+	ErrKeyNotFound     = errors.New("matching signing key not found")
+	ErrUnsupportedAlgo = errors.New("unsupported signing algorithm")
+
+	// ErrIssuerMismatch means the token was minted by a different issuer than the
+	// verifier trusts. In a multi-tenant deployment each tenant is its own issuer,
+	// so skipping this check lets one tenant's token authorize calls against
+	// another tenant whenever the two happen to share a signing key.
+	ErrIssuerMismatch = errors.New("token issuer does not match the expected issuer")
+
+	// ErrAudienceMismatch means the token was not minted for this resource server.
+	// Without it, a token a user consented to give application A is replayable
+	// against application B inside the same tenant.
+	ErrAudienceMismatch = errors.New("token audience does not include the expected audience")
+
+	// ErrTokenUseMismatch means an ID token was presented where an access token
+	// was required, or vice versa.
+	ErrTokenUseMismatch = errors.New("token was issued for a different use")
+
+	// ErrTokenNotYetValid means the token's nbf claim is in the future beyond the
+	// allowed clock skew.
+	ErrTokenNotYetValid = errors.New("token is not valid yet")
 )
+
+// VerifyOptions declares what a verifier requires of a token beyond a valid
+// signature. Every field left empty disables the corresponding check, so callers
+// that authorize requests should set ExpectedIssuer, ExpectedAudience and
+// ExpectedTokenUse — a signature alone only proves the token was minted by a key
+// in the set, not that it was minted for this tenant, this API, or this purpose.
+type VerifyOptions struct {
+	// ExpectedIssuer is the `iss` the token must carry.
+	ExpectedIssuer string
+	// ExpectedAudience must appear in the token's `aud`.
+	ExpectedAudience string
+	// ExpectedTokenUse is the required `token_use` (see models.TokenUse*).
+	ExpectedTokenUse string
+	// Leeway tolerates clock skew between issuer and verifier when checking the
+	// exp and nbf claims. DefaultLeeway is used when zero.
+	Leeway time.Duration
+}
+
+// DefaultLeeway is the clock-skew tolerance applied when VerifyOptions.Leeway is
+// not set. Distributed nodes are rarely perfectly synchronized, and a token
+// rejected purely because the verifier's clock ran slightly ahead of the
+// issuer's is an outage, not a security win.
+const DefaultLeeway = 60 * time.Second
 
 // GenerateRSAKeyPair generates a new 2048-bit RSA signing key pair for an organization/app.
 func GenerateRSAKeyPair(orgID, appID string) (*models.SigningKey, error) {
@@ -174,8 +216,20 @@ func SignJWT(claims *models.AuthClaims, privateKeyPEM string, kid string) (strin
 	return fmt.Sprintf("%s.%s", signingInput, encodedSignature), nil
 }
 
-// VerifyJWT validates a JWT token string against a set of active public keys offline.
+// VerifyJWT validates a token's signature and time bounds against a set of
+// public keys, offline.
+//
+// It deliberately does NOT check the issuer or the audience, so on its own it is
+// NOT sufficient to authorize a request: it proves only that some key in `keys`
+// signed the token. Anything making an access-control decision must call
+// VerifyJWTWithOptions and supply the issuer, audience and token use it demands.
 func VerifyJWT(tokenString string, keys []*models.SigningKey) (*models.AuthClaims, error) {
+	return VerifyJWTWithOptions(tokenString, keys, VerifyOptions{})
+}
+
+// VerifyJWTWithOptions validates a token offline and enforces every non-empty
+// expectation in opts.
+func VerifyJWTWithOptions(tokenString string, keys []*models.SigningKey, opts VerifyOptions) (*models.AuthClaims, error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return nil, ErrInvalidToken
@@ -191,36 +245,59 @@ func VerifyJWT(tokenString string, keys []*models.SigningKey) (*models.AuthClaim
 		return nil, ErrInvalidToken
 	}
 
+	// Pin the algorithm. Accepting whatever the token declares is the classic JWT
+	// algorithm-confusion bug: "none" would skip verification entirely, and an
+	// HMAC alg would invite the verifier to treat the RSA public key as a shared
+	// secret that the attacker already knows.
 	if header.Alg != "RS256" {
 		return nil, ErrUnsupportedAlgo
 	}
 
-	// Find matching key by KID or ID
+	// Resolve the signing key by exact key id.
+	//
+	// The previous implementation matched loosely (substring/suffix comparisons)
+	// and then, on no match, fell back to "just use the first active key". Both
+	// behaviours defeat key rotation: during a rollover the wrong key is selected
+	// and valid tokens are rejected, while a token whose kid is unknown gets a
+	// verification attempt it should never have received. A kid that names no
+	// known key is now an error.
 	var matchingKey *models.SigningKey
 	for _, k := range keys {
-		if !k.Active {
+		if k == nil || !k.Active {
 			continue
 		}
-		if header.Kid == "" || k.KID == header.Kid || k.ID == header.Kid || strings.HasSuffix(k.ID, header.Kid) || strings.HasSuffix(header.Kid, k.KID) {
+		if header.Kid != "" && (k.KID == header.Kid || k.ID == header.Kid) {
 			matchingKey = k
 			break
 		}
 	}
 
-	if matchingKey == nil && len(keys) > 0 {
+	// A token with no kid cannot be attributed to one key, so every active key is
+	// a candidate and the signature decides. This stays supported because tokens
+	// from third-party issuers do not always carry a kid.
+	if matchingKey == nil && header.Kid == "" {
 		for _, k := range keys {
-			if k.Active {
-				matchingKey = k
-				break
+			if k == nil || !k.Active {
+				continue
+			}
+			if claims, err := verifyAgainstKey(tokenString, parts, k, opts); err == nil {
+				return claims, nil
 			}
 		}
+		return nil, ErrKeyNotFound
 	}
 
 	if matchingKey == nil {
 		return nil, ErrKeyNotFound
 	}
 
-	block, _ := pem.Decode([]byte(matchingKey.PublicKeyPEM))
+	return verifyAgainstKey(tokenString, parts, matchingKey, opts)
+}
+
+// verifyAgainstKey checks the signature with exactly one key and then validates
+// the claim set.
+func verifyAgainstKey(tokenString string, parts []string, key *models.SigningKey, opts VerifyOptions) (*models.AuthClaims, error) {
+	block, _ := pem.Decode([]byte(key.PublicKeyPEM))
 	if block == nil {
 		return nil, fmt.Errorf("failed to parse public key PEM block")
 	}
@@ -256,9 +333,38 @@ func VerifyJWT(tokenString string, keys []*models.SigningKey) (*models.AuthClaim
 		return nil, ErrInvalidToken
 	}
 
-	if claims.ExpiresAt > 0 && time.Now().Unix() > claims.ExpiresAt {
-		return nil, ErrTokenExpired
+	if err := validateClaims(&claims, opts); err != nil {
+		return nil, err
 	}
 
 	return &claims, nil
+}
+
+// validateClaims enforces the time bounds plus every expectation the caller
+// declared. Each expectation is skipped only when the caller left it empty.
+func validateClaims(claims *models.AuthClaims, opts VerifyOptions) error {
+	leeway := opts.Leeway
+	if leeway == 0 {
+		leeway = DefaultLeeway
+	}
+	now := time.Now()
+
+	if claims.ExpiresAt > 0 && now.Add(-leeway).Unix() > claims.ExpiresAt {
+		return ErrTokenExpired
+	}
+	if claims.NotBefore > 0 && now.Add(leeway).Unix() < claims.NotBefore {
+		return ErrTokenNotYetValid
+	}
+
+	if opts.ExpectedIssuer != "" && claims.Issuer != opts.ExpectedIssuer {
+		return ErrIssuerMismatch
+	}
+	if opts.ExpectedAudience != "" && !claims.Audience.Contains(opts.ExpectedAudience) {
+		return ErrAudienceMismatch
+	}
+	if opts.ExpectedTokenUse != "" && claims.TokenUse != opts.ExpectedTokenUse {
+		return ErrTokenUseMismatch
+	}
+
+	return nil
 }

@@ -51,20 +51,35 @@ func (h *OIDCHandler) WellKnownConfig(w http.ResponseWriter, r *http.Request) {
 		orgID = "default"
 	}
 
-	issuer := fmt.Sprintf("https://authpole.io/organizations/%s", orgID)
+	// The issuer comes from the engine's resolver, not a literal. It MUST be the
+	// exact string minted into tokens and the origin that serves this document, or
+	// every conformant client will reject the tokens after validating discovery.
+	issuer := h.engine.IssuerFor(orgID)
+	base := h.computeServerBaseURL(r)
 
 	config := map[string]interface{}{
 		"issuer":                                issuer,
-		"authorization_endpoint":                "/oauth/v2/authorize",
-		"token_endpoint":                        "/oauth/v2/token",
-		"userinfo_endpoint":                     "/oauth/v2/userinfo",
-		"jwks_uri":                              fmt.Sprintf("/organizations/%s/.well-known/jwks.json", orgID),
-		"introspection_endpoint":                "/oauth/v2/introspect",
+		"authorization_endpoint":                base + "/oauth/v2/authorize",
+		"token_endpoint":                        base + "/oauth/v2/token",
+		"userinfo_endpoint":                     base + "/oauth/v2/userinfo",
+		"jwks_uri":                              fmt.Sprintf("%s/organizations/%s/.well-known/jwks.json", base, orgID),
+		"introspection_endpoint":                base + "/oauth/v2/introspect",
 		"response_types_supported":              []string{"code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
-		"scopes_supported":                      []string{"openid", "profile", "email"},
-		"claims_supported":                      []string{"sub", "iss", "aud", "exp", "iat", "email", "name", "organization_id", "app_id"},
+		// Advertising PKCE is not cosmetic: SPA libraries read this list to decide
+		// whether to send a code challenge at all, and omitting it makes a compliant
+		// client silently skip PKCE.
+		"code_challenge_methods_supported": []string{"S256"},
+		"token_endpoint_auth_methods_supported": []string{
+			"none", "client_secret_post", "client_secret_basic",
+		},
+		"scopes_supported": []string{"openid", "profile", "email"},
+		"claims_supported": []string{
+			"sub", "iss", "aud", "exp", "iat", "nbf", "jti", "nonce",
+			"token_use", "email", "name", "organization_id", "app_id", "scope",
+		},
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -161,9 +176,28 @@ func (h *OIDCHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// response_type is required by RFC 6749 §4.1.1. Only the authorization-code
+	// flow is supported: the implicit flow returns tokens in the URL fragment and
+	// is retired for exactly the reasons PKCE exists.
+	if rt := r.URL.Query().Get("response_type"); rt != "" && rt != "code" {
+		http.Error(w, `{"error":"unsupported_response_type","message":"only response_type=code is supported"}`, http.StatusBadRequest)
+		return
+	}
+
 	serverBaseURL := h.computeServerBaseURL(r)
 
-	redirectURL, err := h.engine.PrepareAuthorization(r.Context(), serverBaseURL, orgID, clientID, redirectURI, scope, state, idpID)
+	redirectURL, err := h.engine.PrepareAuthorization(r.Context(), idp.AuthorizationRequest{
+		ServerBaseURL:       serverBaseURL,
+		OrganizationID:      orgID,
+		ClientID:            clientID,
+		RedirectURI:         redirectURI,
+		Scope:               scope,
+		State:               state,
+		IDPID:               idpID,
+		CodeChallenge:       r.URL.Query().Get("code_challenge"),
+		CodeChallengeMethod: r.URL.Query().Get("code_challenge_method"),
+		Nonce:               r.URL.Query().Get("nonce"),
+	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"invalid_request","message":"%s"}`, err.Error()), http.StatusBadRequest)
 		return
@@ -196,19 +230,52 @@ func (h *OIDCHandler) Token(w http.ResponseWriter, r *http.Request) {
 	clientSecret := r.FormValue("client_secret")
 	code := r.FormValue("code")
 	redirectURI := r.FormValue("redirect_uri")
+	grantType := r.FormValue("grant_type")
 
-	if code == "" || clientID == "" {
-		http.Error(w, `{"error":"invalid_request","message":"missing code or client_id"}`, http.StatusBadRequest)
+	// RFC 6749 §2.3.1 also allows client credentials via HTTP Basic. Accept it so
+	// confidential clients using standard libraries interoperate.
+	if basicID, basicSecret, ok := r.BasicAuth(); ok {
+		if clientID == "" {
+			clientID = basicID
+		}
+		if clientSecret == "" {
+			clientSecret = basicSecret
+		}
+	}
+
+	if clientID == "" {
+		http.Error(w, `{"error":"invalid_request","message":"missing client_id"}`, http.StatusBadRequest)
+		return
+	}
+	if grantType == idp.GrantRefreshToken {
+		if r.FormValue("refresh_token") == "" {
+			http.Error(w, `{"error":"invalid_request","message":"missing refresh_token"}`, http.StatusBadRequest)
+			return
+		}
+	} else if code == "" {
+		http.Error(w, `{"error":"invalid_request","message":"missing code"}`, http.StatusBadRequest)
 		return
 	}
 
-	resp, err := h.engine.ExchangeCodeForToken(r.Context(), orgID, clientID, clientSecret, code, redirectURI)
+	resp, err := h.engine.ExchangeCodeForToken(r.Context(), idp.TokenRequest{
+		GrantType:      grantType,
+		OrganizationID: orgID,
+		ClientID:       clientID,
+		ClientSecret:   clientSecret,
+		Code:           code,
+		RedirectURI:    redirectURI,
+		CodeVerifier:   r.FormValue("code_verifier"),
+		RefreshToken:   r.FormValue("refresh_token"),
+	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"invalid_grant","message":"%s"}`, err.Error()), http.StatusBadRequest)
 		return
 	}
 
+	// Tokens must never be cached by an intermediary or the browser (RFC 6749 §5.1).
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
