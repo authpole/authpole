@@ -59,6 +59,12 @@ type Config struct {
 	// TenantResolver determines the tenant for a request. Defaults to
 	// TenantFromQuery, which is only appropriate for single-tenant use.
 	TenantResolver TenantResolver
+
+	// RequireTenant refuses a request whose hostname does not identify a tenant,
+	// instead of letting it fall through to the "default" tenant. Set it in a
+	// multi-tenant deployment: serving the default tenant's issuer and JWKS on the
+	// apex or on a reserved hostname advertises an issuer no client should use.
+	RequireTenant bool
 }
 
 // Provider is an embedded Auth Pole instance.
@@ -106,7 +112,56 @@ func New(cfg Config) (*Provider, error) {
 // Handler returns the provider's HTTP surface: discovery, JWKS, authorize, token,
 // the upstream callback, the admin API and the SPIFFE endpoints. Mount it wherever
 // the host wants; it does not assume it owns the root.
-func (p *Provider) Handler() http.Handler { return p.server }
+//
+// The returned handler applies the configured TenantResolver before the protocol
+// handlers run. That is not a convenience: the handlers themselves read the tenant
+// from an "organization" query parameter and fall back to "default", so a Provider
+// that merely stored a resolver would serve the "default" tenant's issuer and JWKS
+// on every hostname, and would let any caller pick a tenant by appending
+// ?organization=<other>. Resolving here, and stripping the caller's own parameters,
+// is what makes TenantResolver load-bearing rather than decorative.
+func (p *Provider) Handler() http.Handler { return p.withResolvedTenant(p.server) }
+
+// withResolvedTenant pins the resolved tenant onto the request and removes any
+// tenant selector the caller supplied.
+func (p *Provider) withResolvedTenant(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tenant := p.cfg.TenantResolver(r)
+
+		if tenant == "" && p.cfg.RequireTenant {
+			// A multi-tenant deployment reached on a hostname that is not a tenant
+			// (the apex, or a reserved label such as app.<domain>). Serving the
+			// "default" tenant's metadata there would advertise an issuer nobody
+			// should use, so refuse instead.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"unknown_tenant","message":"this hostname does not identify a tenant"}`))
+			return
+		}
+
+		// Strip the caller-controlled selectors unconditionally, including when the
+		// resolver found nothing: leaving them in place is precisely what would let
+		// a client choose whose issuer and keys it is served.
+		query := r.URL.Query()
+		query.Del("organization")
+		query.Del("tenant")
+		if tenant != "" {
+			query.Set("organization", tenant)
+		}
+
+		scoped := r.Clone(r.Context())
+		scoped.URL.RawQuery = query.Encode()
+
+		// Several handlers read the tenant from a header instead of the query.
+		scoped.Header.Del("X-Organization-ID")
+		scoped.Header.Del("X-Tenant-ID")
+		if tenant != "" {
+			scoped.Header.Set("X-Organization-ID", tenant)
+		}
+
+		next.ServeHTTP(w, scoped)
+	})
+}
 
 // Validator verifies tokens this provider issued. It reads keys from the shared
 // cache and falls back to storage, so a cold process does not reject valid tokens.
