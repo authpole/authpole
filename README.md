@@ -122,6 +122,54 @@ Host: localhost:8080
 
 ---
 
+## 📦 Embedding Auth Pole in Another Service
+
+Auth Pole runs as a standalone server (`cmd/server`) or as a library inside a host
+application that already owns its HTTP surface, storage and tenancy model.
+
+```go
+import (
+    "github.com/authpole/authpole"
+    "github.com/authpole/authpole/pkg/storage"
+)
+
+provider, err := authpole.New(authpole.Config{
+    // Identity records live in the host's own store, not a second database.
+    Storage: hostStorage,
+
+    // Each tenant is its own OIDC issuer. This MUST be the exact origin that
+    // serves the tenant's discovery document and JWKS, or conformant clients
+    // will reject the tokens after validating discovery.
+    IssuerResolver: authpole.IssuerFromHostPattern("https://%s.example.com"),
+
+    // Derive the tenant from the hostname that routed the request. Reserved
+    // labels never resolve to a tenant.
+    TenantResolver: authpole.TenantFromHost("example.com", "app", "admin", "www"),
+})
+if err != nil {
+    return err
+}
+
+mux.Handle("/", provider.Handler())
+```
+
+On the host's own request path, verify access tokens through the provider:
+
+```go
+claims, err := provider.VerifyAccessToken(ctx, orgID, "my-api", bearerToken)
+```
+
+`VerifyAccessToken` demands the issuer, the audience and `token_use=access`, so a
+token minted for another tenant, another API, or an ID token presented as an access
+token is refused.
+
+> **Tenant resolution matters.** The default resolver reads the `organization` query
+> parameter, which is only appropriate for a single-tenant dev server — a
+> caller-supplied parameter must never select whose data is returned. Multi-tenant
+> deployments should pass `TenantFromHost`.
+
+---
+
 ## 🔒 Compare-And-Swap (CAS) Optimistic Locking
 
 All persistent updates sent to Auth Pole require the current object version:

@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"strings"
 
-	"authpole/pkg/auth"
-	"authpole/pkg/cache"
-	"authpole/pkg/idp"
-	"authpole/pkg/models"
-	"authpole/pkg/storage"
+	"github.com/authpole/authpole/pkg/auth"
+	"github.com/authpole/authpole/pkg/cache"
+	"github.com/authpole/authpole/pkg/idp"
+	"github.com/authpole/authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/storage"
 )
 
 type Server struct {
@@ -180,6 +180,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mux.ServeHTTP(w, r)
 }
+
+// IDPEngine exposes the engine backing this server so an embedding host can
+// install its own issuer resolver and reuse the engine as a token key source.
+func (s *Server) IDPEngine() *idp.IDPEngine { return s.idpEngine }
+
+// Validator exposes the server's token validator.
+func (s *Server) Validator() *auth.TokenValidator { return s.validator }
 
 // applyCORS decides the cross-origin policy for a request.
 //

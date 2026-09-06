@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"authpole/pkg/cache"
-	"authpole/pkg/crypto"
-	"authpole/pkg/models"
-	"authpole/pkg/spiffe"
-	"authpole/pkg/storage"
+	"github.com/authpole/authpole/pkg/cache"
+	"github.com/authpole/authpole/pkg/crypto"
+	"github.com/authpole/authpole/pkg/models"
+	"github.com/authpole/authpole/pkg/spiffe"
+	"github.com/authpole/authpole/pkg/storage"
 )
 
 type SPIFFEHandler struct {
