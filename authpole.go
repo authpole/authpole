@@ -197,6 +197,19 @@ func (p *Provider) VerifyAccessToken(ctx context.Context, orgID, audience, token
 	})
 }
 
+// IssueSVID mints a short-lived JWT-SVID for a registered workload.
+//
+// The caller MUST have proven possession of the certificate's private key before
+// calling this - through a real mutual-TLS handshake - and passes only the
+// resulting fingerprint. Nothing here can establish possession: a certificate is
+// public, so a fingerprint the caller merely read is not authentication. An
+// embedding host obtains that proof at its transport boundary (a terminated mTLS
+// connection, or a CDN that terminated one and is itself authenticated) and calls
+// this with the verified fingerprint.
+func (p *Provider) IssueSVID(ctx context.Context, req idp.SVIDRequest) (*idp.SVIDResponse, error) {
+	return p.engine.IssueSVID(ctx, req)
+}
+
 // TenantFromQuery reads the tenant from the "organization" (or "tenant") query
 // parameter.
 //
