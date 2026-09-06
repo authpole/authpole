@@ -59,20 +59,35 @@ func ComputeCertFingerprint(certPEM string) (string, error) {
 		return "", errors.New("failed to decode certificate PEM block")
 	}
 
-	h := sha256.Sum256(block.Bytes)
-	return hex.EncodeToString(h[:]), nil
+	return ComputeCertFingerprintDER(block.Bytes), nil
 }
 
-// ValidateLongExpiryCert validates a presented client certificate against workload identity constraints.
-func ValidateLongExpiryCert(certPEM string, workload *models.SPIFFEWorkload) error {
-	block, _ := pem.Decode([]byte(certPEM))
-	if block == nil {
-		return errors.New("failed to decode certificate PEM")
-	}
+// ComputeCertFingerprintDER returns the SHA-256 fingerprint of raw DER bytes.
+//
+// This is the form used against a verified *x509.Certificate (cert.Raw), so a
+// fingerprint check never has to round-trip back through PEM text - which is both
+// wasteful and an opportunity to fingerprint something other than the certificate
+// the TLS stack actually validated.
+func ComputeCertFingerprintDER(der []byte) string {
+	h := sha256.Sum256(der)
+	return hex.EncodeToString(h[:])
+}
 
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("failed to parse x509 certificate: %w", err)
+// ValidateWorkloadCert checks an ALREADY-VERIFIED client certificate against a
+// registered workload.
+//
+// It takes a parsed *x509.Certificate rather than a PEM string on purpose. The
+// previous signature accepted a PEM from anywhere, which made it trivially
+// reachable with a certificate the caller merely copied - a certificate carries
+// only a public key, so possessing its bytes proves nothing. Callers must obtain
+// the certificate from VerifiedClientCert, which only yields one whose private key
+// was proven through a TLS handshake.
+func ValidateWorkloadCert(cert *x509.Certificate, workload *models.SPIFFEWorkload) error {
+	if cert == nil {
+		return ErrNoClientCertificate
+	}
+	if workload == nil {
+		return errors.New("workload is required")
 	}
 
 	now := time.Now()
@@ -80,29 +95,32 @@ func ValidateLongExpiryCert(certPEM string, workload *models.SPIFFEWorkload) err
 		return ErrCertExpired
 	}
 
-	// Validate Fingerprint if configured
-	if workload.CertFingerprint != "" {
-		fp, err := ComputeCertFingerprint(certPEM)
-		if err != nil {
-			return err
-		}
-		if !strings.EqualFold(fp, workload.CertFingerprint) {
-			return ErrFingerprint
-		}
+	// A registered fingerprint is mandatory. Previously validation was skipped
+	// entirely when both the presented cert and the stored fingerprint were absent,
+	// so a workload registered without a fingerprint would issue an SVID to anyone
+	// who knew its ID. There is no safe way to authenticate against nothing.
+	if strings.TrimSpace(workload.CertFingerprint) == "" {
+		return ErrWorkloadNotBound
 	}
 
-	// Check URI SAN matches SPIFFE ID
+	fp := ComputeCertFingerprintDER(cert.Raw)
+	if !strings.EqualFold(fp, strings.TrimSpace(workload.CertFingerprint)) {
+		return ErrFingerprint
+	}
+
+	// The SPIFFE ID must appear as a URI SAN. This was previously skipped whenever
+	// the certificate carried no URIs at all, which let a certificate with no SPIFFE
+	// identity authenticate as a workload that declared one.
 	if workload.SPIFFEID != "" {
-		matchedSAN := false
+		matched := false
 		for _, uri := range cert.URIs {
 			if uri.String() == workload.SPIFFEID {
-				matchedSAN = true
+				matched = true
 				break
 			}
 		}
-		if !matchedSAN && len(cert.URIs) > 0 {
-			// If cert has URIs but none matched expected SPIFFE ID
-			return fmt.Errorf("certificate SPIFFE SAN mismatch")
+		if !matched {
+			return fmt.Errorf("certificate does not carry SPIFFE ID %q as a URI SAN", workload.SPIFFEID)
 		}
 	}
 
