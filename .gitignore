@@ -21,3 +21,16 @@ tmp/
 terraform/.terraform/
 terraform/*.tfstate
 terraform/*.tfstate.backup
+
+# Terraform plan and lock artifacts.
+#
+# A saved plan is a ZIP that EMBEDS tfstate and tfstate-prev, so committing one
+# publishes every resource attribute - account id, VPC/subnet/security-group ids,
+# bucket names, load balancer DNS, IAM ARNs - and any sensitive value the state
+# holds. terraform/tfplan was tracked until it was purged from history; the
+# patterns above matched *.tfstate but not the plan that contains it.
+terraform/tfplan
+terraform/*.tfplan
+terraform/plan.out
+*.tfplan
+terraform/.terraform.tfstate.lock.info
