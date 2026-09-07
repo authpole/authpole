@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -255,7 +256,33 @@ func (e *IDPEngine) PrepareAuthorization(ctx context.Context, req AuthorizationR
 		if len(app.AllowedIDPs) > 0 {
 			selectedIDPID = app.AllowedIDPs[0]
 		} else {
-			return "", fmt.Errorf("no upstream IDP configured for this application")
+			// An empty AllowedIDPs means the app is not restricted - which is exactly
+			// how the check below reads it, since it only rejects a named provider when
+			// the list is non-empty. So the default must come from what the TENANT has
+			// configured. Previously this branch returned "no upstream IDP configured
+			// for this application" whenever the list was empty, which was wrong twice
+			// over: it reported a tenant with several working providers as having none,
+			// and it made an unrestricted app the one kind that could not be used
+			// without naming a provider.
+			available, err := e.enabledIDPIDs(ctx, req.OrganizationID)
+			if err != nil {
+				return "", err
+			}
+
+			switch len(available) {
+			case 0:
+				return "", fmt.Errorf("no upstream identity provider is configured for this tenant")
+			case 1:
+				// Unambiguous, so do not make the caller say it.
+				selectedIDPID = available[0]
+			default:
+				// Naming one is required rather than picking arbitrarily: which provider
+				// authenticates a user is a security-relevant choice, and silently
+				// preferring whichever sorted first would make the flow depend on
+				// storage order.
+				return "", fmt.Errorf("the idp parameter is required: this tenant has %d identity providers configured (%s)",
+					len(available), strings.Join(available, ", "))
+			}
 		}
 	} else if len(app.AllowedIDPs) > 0 && !containsString(app.AllowedIDPs, selectedIDPID) {
 		return "", fmt.Errorf("identity provider %q is not enabled for app %s", selectedIDPID, app.ID)
@@ -1060,4 +1087,31 @@ func getFirstEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// enabledIDPIDs lists the ids of a tenant's enabled identity providers, sorted so the
+// result does not depend on storage iteration order.
+//
+// Used to resolve a default provider and, when there is more than one, to tell the
+// caller which are available. An unreadable record is skipped rather than failing the
+// whole lookup: one corrupt entry must not make a tenant's other providers unusable.
+func (e *IDPEngine) enabledIDPIDs(ctx context.Context, orgID string) ([]string, error) {
+	records, err := e.storage.List(ctx, fmt.Sprintf("organizations/%s/idps/", orgID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list identity providers: %w", err)
+	}
+
+	ids := make([]string, 0, len(records))
+	for _, record := range records {
+		var idp models.IdentityProvider
+		if err := json.Unmarshal(record.Data, &idp); err != nil {
+			continue
+		}
+		if idp.Enabled && idp.ID != "" {
+			ids = append(ids, idp.ID)
+		}
+	}
+
+	sort.Strings(ids)
+	return ids, nil
 }
