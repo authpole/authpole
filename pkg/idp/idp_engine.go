@@ -935,6 +935,7 @@ func (e *IDPEngine) resolveSigningKey(ctx context.Context, orgID, appID string) 
 		return nil, fmt.Errorf("failed to persist signing key: %w", err)
 	}
 
+	e.cache.InvalidateApp(orgID, appID)
 	e.cache.SetSigningKeys(orgID, appID, []*models.SigningKey{newKey}, 1*time.Hour)
 	return newKey, nil
 }
@@ -1038,32 +1039,32 @@ func (e *IDPEngine) resolveUpstreamIDP(ctx context.Context, orgID, clientID, idp
 
 	// Tenant-level IDP resolution: look up organization storage.
 	// These are IDPs that tenants configure for their own applications.
-	isPlaceholder := func(c string) bool {
-		return c == "" || strings.HasPrefix(c, "google_oauth_client_id") || strings.HasPrefix(c, "github_oauth_client_id") || c == "authpole_proxy"
-	}
-
-	// decodeUsable returns the stored provider if it is enabled and configured.
 	//
+	// decodeUsable returns the stored provider if it is enabled and configured.
 	// It deliberately does NOT rewrite AuthorizeURL/TokenURL for records whose ID
-	// happens to be "google" or "github". Doing so meant naming a provider "github"
-	// silently forced it at github.com, so a tenant could not point that record at
-	// GitHub Enterprise or any self-hosted deployment - its stored configuration was
-	// accepted and then discarded. Defaults now come from effectiveProvider, which
-	// only fills fields the record left empty.
-	decodeUsable := func(data []byte) (*models.IdentityProvider, bool) {
-		var provider models.IdentityProvider
-		if err := json.Unmarshal(data, &provider); err != nil {
-			return nil, false
+	// happens to be "google" or "github". Defaults come from effectiveProvider,
+	// which only fills fields the record left empty.
+	decodeUsable := func(data []byte) (provider *models.IdentityProvider, usable bool, explicitlyDisabled bool) {
+		var p models.IdentityProvider
+		if err := json.Unmarshal(data, &p); err != nil {
+			return nil, false, false
 		}
-		if !provider.Enabled || isPlaceholder(provider.ClientID) {
-			return nil, false
+		if !p.Enabled {
+			return nil, false, true
 		}
-		return &provider, true
+		if isPlaceholderIDPClientID(p.ClientID) {
+			return nil, false, false
+		}
+		return &p, true, false
 	}
 
 	// 1. Try organization-specific storage
 	if rec, err := e.storage.Get(ctx, storage.IDPKey(orgID, idpID)); err == nil {
-		if provider, ok := decodeUsable(rec.Data); ok {
+		provider, usable, disabled := decodeUsable(rec.Data)
+		if disabled {
+			return nil, fmt.Errorf("identity provider %q is disabled for organization %q", idpID, orgID)
+		}
+		if usable {
 			return provider, nil
 		}
 	}
@@ -1071,13 +1072,57 @@ func (e *IDPEngine) resolveUpstreamIDP(ctx context.Context, orgID, clientID, idp
 	// 2. Fall back to default organization storage
 	if orgID != "default" {
 		if rec, err := e.storage.Get(ctx, storage.IDPKey("default", idpID)); err == nil {
-			if provider, ok := decodeUsable(rec.Data); ok {
+			if provider, usable, _ := decodeUsable(rec.Data); usable {
 				return provider, nil
 			}
 		}
 	}
 
+	// 3. Fall back to platform OAuth credentials (AUTHPOLE_GOOGLE_CLIENT_ID / AUTHPOLE_GITHUB_CLIENT_ID)
+	// when the tenant has not configured custom OAuth app credentials (or still has seeded placeholders).
+	if p := platformFallbackIDP(idpID); p != nil {
+		return p, nil
+	}
+
 	return nil, fmt.Errorf("upstream identity provider %q is not configured for organization %q", idpID, orgID)
+}
+
+func isPlaceholderIDPClientID(c string) bool {
+	return c == "" || strings.HasPrefix(c, "google_oauth_client_id") || strings.HasPrefix(c, "github_oauth_client_id") || c == "authpole_proxy"
+}
+
+func platformFallbackIDP(idpID string) *models.IdentityProvider {
+	switch idpID {
+	case "google":
+		if cid := getFirstEnv("AUTHPOLE_GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_ID"); cid != "" {
+			return &models.IdentityProvider{
+				ID:           "google",
+				Name:         "Google",
+				Type:         "oidc",
+				ClientID:     cid,
+				ClientSecret: getFirstEnv("AUTHPOLE_GOOGLE_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET"),
+				AuthorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
+				TokenURL:     "https://oauth2.googleapis.com/token",
+				Scopes:       []string{"openid", "profile", "email"},
+				Enabled:      true,
+			}
+		}
+	case "github":
+		if cid := getFirstEnv("AUTHPOLE_GITHUB_CLIENT_ID", "GITHUB_CLIENT_ID"); cid != "" {
+			return &models.IdentityProvider{
+				ID:           "github",
+				Name:         "GitHub",
+				Type:         "oauth2",
+				ClientID:     cid,
+				ClientSecret: getFirstEnv("AUTHPOLE_GITHUB_CLIENT_SECRET", "GITHUB_CLIENT_SECRET"),
+				AuthorizeURL: "https://github.com/login/oauth/authorize",
+				TokenURL:     "https://github.com/login/oauth/access_token",
+				Scopes:       []string{"user:email", "read:user"},
+				Enabled:      true,
+			}
+		}
+	}
+	return nil
 }
 
 func getFirstEnv(keys ...string) string {
@@ -1101,14 +1146,29 @@ func (e *IDPEngine) enabledIDPIDs(ctx context.Context, orgID string) ([]string, 
 		return nil, fmt.Errorf("failed to list identity providers: %w", err)
 	}
 
+	disabled := make(map[string]bool)
+	seen := make(map[string]bool)
 	ids := make([]string, 0, len(records))
 	for _, record := range records {
 		var idp models.IdentityProvider
-		if err := json.Unmarshal(record.Data, &idp); err != nil {
+		if err := json.Unmarshal(record.Data, &idp); err != nil || idp.ID == "" {
 			continue
 		}
-		if idp.Enabled && idp.ID != "" {
+		if !idp.Enabled {
+			disabled[idp.ID] = true
+			continue
+		}
+		if !isPlaceholderIDPClientID(idp.ClientID) || platformFallbackIDP(idp.ID) != nil {
+			seen[idp.ID] = true
 			ids = append(ids, idp.ID)
+		}
+	}
+
+	if len(ids) == 0 {
+		for _, pid := range []string{"google", "github"} {
+			if !disabled[pid] && !seen[pid] && platformFallbackIDP(pid) != nil {
+				ids = append(ids, pid)
+			}
 		}
 	}
 

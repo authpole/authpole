@@ -85,9 +85,11 @@ func (c *MemoryCache) InvalidateApp(orgID, appID string) {
 	appPrefix := fmt.Sprintf("o:%s:app:%s", orgID, appID)
 	keyPrefix := fmt.Sprintf("o:%s:keys:%s", orgID, appID)
 	jwksPrefix := fmt.Sprintf("o:%s:jwks:%s", orgID, appID)
+	orgKeyPrefix := fmt.Sprintf("o:%s:keys:", orgID)
+	orgJWKSPrefix := fmt.Sprintf("o:%s:jwks:", orgID)
 
 	for k := range c.items {
-		if k == appPrefix || k == keyPrefix || k == jwksPrefix {
+		if k == appPrefix || k == keyPrefix || k == jwksPrefix || k == orgKeyPrefix || k == orgJWKSPrefix {
 			delete(c.items, k)
 		}
 	}

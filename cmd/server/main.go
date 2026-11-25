@@ -197,13 +197,13 @@ func seedInitialData(store storage.Storage, c *cache.MemoryCache) {
 		iGithubBytes, _ := json.Marshal(idpGithub)
 		_, _ = store.Put(ctx, storage.IDPKey("default", "github"), iGithubBytes, "")
 
-		// 4. Default RSA Key Pair
-		keyPair, err := crypto.GenerateRSAKeyPair("default", "demo_app")
+		// 4. Default RSA Key Pair (org-wide so every app in default has an active key immediately)
+		keyPair, err := crypto.GenerateRSAKeyPair("default", "")
 		if err == nil {
 			kBytes, _ := json.Marshal(keyPair)
 			kVer, _ := store.Put(ctx, storage.KeyPairKey("default", keyPair.ID), kBytes, "")
 			keyPair.Version = kVer
-			c.SetSigningKeys("default", "demo_app", []*models.SigningKey{keyPair}, 1*time.Hour)
+			c.SetSigningKeys("default", "", []*models.SigningKey{keyPair}, 1*time.Hour)
 		}
 
 		// 5. Default Admin User, Team, and Role
@@ -260,6 +260,39 @@ func seedInitialData(store storage.Storage, c *cache.MemoryCache) {
 		}
 		swBytes, _ := json.Marshal(spiffeWorkload)
 		_, _ = store.Put(ctx, storage.SPIFFEWorkloadKey("default", spiffeWorkload.ID), swBytes, "")
+	}
+
+	// Ensure the public PKCE OIDC client for swiish exists even on upgraded stores.
+	swiishAppKey := storage.AppKey("default", "swiish")
+	if _, err := store.Get(ctx, swiishAppKey); err == storage.ErrNotFound {
+		redirects := []string{
+			"https://web.swii.sh/sh/authpole/callback",
+			"http://localhost:8080/sh/authpole/callback",
+			"http://127.0.0.1:8080/sh/authpole/callback",
+		}
+		if extra := os.Getenv("AUTHPOLE_SWIISH_REDIRECT_URIS"); extra != "" {
+			for _, u := range strings.Split(extra, ",") {
+				if u = strings.TrimSpace(u); u != "" {
+					redirects = append(redirects, u)
+				}
+			}
+		}
+		swiishApp := &models.Application{
+			ID:             "swiish",
+			OrganizationID: "default",
+			Name:           "swiish Portal Gateway",
+			ClientID:       "swiish",
+			RedirectURIs:   redirects,
+			Scopes:         []string{"openid", "profile", "email"},
+			Public:         true,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+		}
+		appBytes, _ := json.Marshal(swiishApp)
+		if ver, putErr := store.Put(ctx, swiishAppKey, appBytes, ""); putErr == nil {
+			swiishApp.Version = ver
+			c.SetApp("default", "swiish", swiishApp, 1*time.Hour)
+		}
 	}
 }
 
