@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/authpole/authpole/pkg/cache"
@@ -37,19 +38,29 @@ func (h *OIDCHandler) computeServerBaseURL(r *http.Request) string {
 	return fmt.Sprintf("%s://%s", scheme, r.Host)
 }
 
+func oidcOrgFromRequest(r *http.Request) string {
+	if orgID := r.Header.Get("X-Organization-ID"); orgID != "" {
+		return orgID
+	}
+	if orgID := r.Header.Get("X-Tenant-ID"); orgID != "" {
+		return orgID
+	}
+	if orgID := r.URL.Query().Get("organization"); orgID != "" {
+		return orgID
+	}
+	if orgID := r.URL.Query().Get("tenant"); orgID != "" {
+		return orgID
+	}
+	return "default"
+}
+
 // WellKnownConfig handles standard OIDC Discovery endpoint: /.well-known/openid-configuration
 func (h *OIDCHandler) WellKnownConfig(w http.ResponseWriter, r *http.Request) {
 	if h.admin != nil && h.admin.EnableCORS(w, r) {
 		return
 	}
 
-	orgID := r.URL.Query().Get("organization")
-	if orgID == "" {
-		orgID = r.URL.Query().Get("tenant")
-	}
-	if orgID == "" {
-		orgID = "default"
-	}
+	orgID := oidcOrgFromRequest(r)
 
 	// The issuer comes from the engine's resolver, not a literal. It MUST be the
 	// exact string minted into tokens and the origin that serves this document, or
@@ -57,11 +68,18 @@ func (h *OIDCHandler) WellKnownConfig(w http.ResponseWriter, r *http.Request) {
 	issuer := h.engine.IssuerFor(orgID)
 	base := h.computeServerBaseURL(r)
 
+	orgPrefix := ""
+	if r.Header.Get("X-Organization-ID") == "" && r.Header.Get("X-Tenant-ID") == "" {
+		if strings.HasPrefix(r.URL.Path, "/organizations/") || strings.HasPrefix(r.URL.Path, "/tenants/") || orgID != "default" {
+			orgPrefix = fmt.Sprintf("/organizations/%s", orgID)
+		}
+	}
+
 	config := map[string]interface{}{
 		"issuer":                                issuer,
-		"authorization_endpoint":                base + "/oauth/v2/authorize",
-		"token_endpoint":                        base + "/oauth/v2/token",
-		"userinfo_endpoint":                     base + "/oauth/v2/userinfo",
+		"authorization_endpoint":                base + orgPrefix + "/oauth/v2/authorize",
+		"token_endpoint":                        base + orgPrefix + "/oauth/v2/token",
+		"userinfo_endpoint":                     base + orgPrefix + "/oauth/v2/userinfo",
 		"jwks_uri":                              fmt.Sprintf("%s/organizations/%s/.well-known/jwks.json", base, orgID),
 		"introspection_endpoint":                base + "/oauth/v2/introspect",
 		"response_types_supported":              []string{"code"},
@@ -92,13 +110,7 @@ func (h *OIDCHandler) JWKS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	orgID := r.URL.Query().Get("organization")
-	if orgID == "" {
-		orgID = r.URL.Query().Get("tenant")
-	}
-	if orgID == "" {
-		orgID = "default"
-	}
+	orgID := oidcOrgFromRequest(r)
 	appID := r.URL.Query().Get("app_id")
 
 	// Check cache
@@ -154,13 +166,7 @@ func (h *OIDCHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	orgID := r.URL.Query().Get("organization")
-	if orgID == "" {
-		orgID = r.URL.Query().Get("tenant")
-	}
-	if orgID == "" {
-		orgID = "default"
-	}
+	orgID := oidcOrgFromRequest(r)
 
 	clientID := r.URL.Query().Get("client_id")
 	redirectURI := r.URL.Query().Get("redirect_uri")
@@ -218,7 +224,13 @@ func (h *OIDCHandler) Token(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = r.ParseForm()
-	orgID := r.FormValue("organization")
+	orgID := r.Header.Get("X-Organization-ID")
+	if orgID == "" {
+		orgID = r.Header.Get("X-Tenant-ID")
+	}
+	if orgID == "" {
+		orgID = r.FormValue("organization")
+	}
 	if orgID == "" {
 		orgID = r.FormValue("tenant")
 	}

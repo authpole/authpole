@@ -56,15 +56,40 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/.well-known/jwks.json", s.oidc.JWKS)
 
 	orgSubHandler := func(w http.ResponseWriter, r *http.Request) {
-		if len(r.URL.Path) >= 20 && r.URL.Path[len(r.URL.Path)-16:] == ".well-known/jwks.json" {
-			s.oidc.JWKS(w, r)
+		orgID, subpath, ok := parseOrgSubpath(r.URL.Path)
+		if !ok {
+			http.NotFound(w, r)
 			return
 		}
-		if len(r.URL.Path) >= 30 && r.URL.Path[len(r.URL.Path)-25:] == ".well-known/spiffe-bundle.json" {
-			s.spiffe.TrustBundle(w, r)
-			return
+
+		// Preserve host-pinned tenant when Auth Pole is embedded with TenantResolver;
+		// only bind the path tenant when no X-Organization-ID header was already pinned.
+		scoped := r
+		if r.Header.Get("X-Organization-ID") == "" && r.Header.Get("X-Tenant-ID") == "" {
+			scoped = r.Clone(r.Context())
+			q := scoped.URL.Query()
+			q.Set("organization", orgID)
+			scoped.URL.RawQuery = q.Encode()
 		}
-		http.NotFound(w, r)
+
+		switch subpath {
+		case "/.well-known/openid-configuration":
+			s.oidc.WellKnownConfig(w, scoped)
+		case "/.well-known/jwks.json":
+			s.oidc.JWKS(w, scoped)
+		case "/.well-known/spiffe-bundle.json", "/.well-known/spiffe/bundle":
+			s.spiffe.TrustBundle(w, scoped)
+		case "/oauth/v2/authorize":
+			s.oidc.Authorize(w, scoped)
+		case "/oauth/v2/token":
+			s.oidc.Token(w, scoped)
+		case "/oauth/v2/callback":
+			s.oidc.Callback(w, scoped)
+		case "/oauth/v2/mock_login":
+			s.oidc.MockLogin(w, scoped)
+		default:
+			http.NotFound(w, r)
+		}
 	}
 	s.mux.HandleFunc("/organizations/", orgSubHandler)
 	s.mux.HandleFunc("/tenants/", orgSubHandler)
@@ -201,7 +226,7 @@ func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Headers",
 		"Content-Type, Authorization, X-Expected-Version, X-Organization-ID, X-Tenant-ID, X-Admin-Token, X-App-ID, X-Expected-Audience")
 
-	if publicReadPaths[r.URL.Path] || strings.HasSuffix(r.URL.Path, "/.well-known/jwks.json") {
+	if publicReadPaths[r.URL.Path] || strings.HasSuffix(r.URL.Path, "/.well-known/jwks.json") || strings.HasSuffix(r.URL.Path, "/.well-known/openid-configuration") {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		return
 	}
@@ -268,4 +293,21 @@ func (s *Server) originAllowed(r *http.Request, origin string) bool {
 		}
 	}
 	return false
+}
+
+func parseOrgSubpath(path string) (orgID, subpath string, ok bool) {
+	var rest string
+	switch {
+	case strings.HasPrefix(path, "/organizations/"):
+		rest = strings.TrimPrefix(path, "/organizations/")
+	case strings.HasPrefix(path, "/tenants/"):
+		rest = strings.TrimPrefix(path, "/tenants/")
+	default:
+		return "", "", false
+	}
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], "/" + parts[1], true
 }
